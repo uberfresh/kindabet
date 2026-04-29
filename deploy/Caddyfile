@@ -1,0 +1,28 @@
+# Replace `kindabet.example.com` with your actual domain. Caddy will
+# auto-provision a Let's Encrypt cert on first request.
+#
+# To deploy: copy this file to /etc/caddy/Caddyfile and run
+#   sudo systemctl reload caddy
+
+kindabet.example.com {
+    encode zstd gzip
+
+    # Static-asset cache (Vite hashes the filenames so they're safe to cache long)
+    @assets path /assets/*
+    header @assets Cache-Control "public, max-age=31536000, immutable"
+
+    reverse_proxy 127.0.0.1:5000 {
+        # The bulk-refresh request can take 2-3 minutes for a full sweep
+        transport http {
+            response_header_timeout 300s
+            read_timeout 300s
+        }
+    }
+
+    log {
+        output file /var/log/caddy/kindabet.log {
+            roll_size 50mb
+            roll_keep 5
+        }
+    }
+}

@@ -1,0 +1,82 @@
+name: Deploy to Hetzner
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:    # lets you re-deploy manually from the Actions tab
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install + build frontend
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - name: Setup SSH
+        env:
+          DEPLOY_SSH_KEY:    ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST_KEYS:  ${{ secrets.DEPLOY_HOST_KEYS }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_HOST_KEYS" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      # rsync everything except runtime state, build inputs, and .git history.
+      # web/dist/ IS shipped (CI-built); web/node_modules and web/src are not.
+      - name: rsync to server
+        env:
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          rsync -az --delete \
+            --exclude='.git' \
+            --exclude='.venv' \
+            --exclude='__pycache__' \
+            --exclude='data' \
+            --exclude='web/node_modules' \
+            --exclude='web/src' \
+            --exclude='web/.vite' \
+            --exclude='*.log' \
+            -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes" \
+            ./ "$DEPLOY_USER@$DEPLOY_HOST:/opt/kindabet/"
+
+      - name: Install Python deps + restart service
+        env:
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'cd /opt/kindabet \
+             && /opt/kindabet/.venv/bin/pip install -q -r requirements.txt \
+             && sudo /bin/systemctl restart kindabet'
+
+      - name: Smoke test
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          sleep 3
+          curl -fsS --max-time 15 "https://${DEPLOY_HOST_PUBLIC:-$DEPLOY_HOST}/api/matches" \
+            -o /dev/null -w 'HTTP %{http_code} in %{time_total}s\n' || \
+          curl -fsS --max-time 15 "http://$DEPLOY_HOST/api/matches" \
+            -o /dev/null -w 'HTTP %{http_code} in %{time_total}s\n'

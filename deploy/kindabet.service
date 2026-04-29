@@ -1,0 +1,40 @@
+[Unit]
+Description=Kinda Bet — Flask odds-comparison app
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kindabet
+Group=kindabet
+WorkingDirectory=/opt/kindabet
+Environment=PYTHONUNBUFFERED=1
+
+# Single worker — bulk-refresh job state lives in process memory, multiple
+# workers would each have their own copy and progress polling would race.
+# Threading mode handles concurrent requests; the existing _pool inside
+# app.py (max_workers=2) gates Chrome-heavy refresh jobs.
+ExecStart=/opt/kindabet/.venv/bin/gunicorn \
+    --workers 1 \
+    --threads 4 \
+    --worker-class gthread \
+    --bind 127.0.0.1:5000 \
+    --access-logfile - \
+    --error-logfile  - \
+    --timeout 240 \
+    app:app
+
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/kindabet/data
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,11 @@
+# Direct dependencies
+Flask>=3.1,<4
+gunicorn>=23.0,<24    # production WSGI server (single worker — see deploy/kindabet.service)
+openpyxl>=3.1,<4
+
+# Stdlib-only:
+#   sqlite3, urllib.request, json, subprocess, threading, concurrent.futures, re,
+#   unicodedata, datetime, gzip, os
+#
+# External system tools used by the headless scrapers (not installable via pip):
+#   - google-chrome  (used by Bingoal & Circus scrapers via --headless --dump-dom)

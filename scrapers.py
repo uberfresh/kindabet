@@ -1,0 +1,791 @@
+"""
+Kinda Bet — odds scrapers across 4 NL operators (711.nl, Unibet, TOTO, TonyBet).
+
+Reference operator is 711.nl (Kambi platform — exposes the most markets).
+Unibet (also Kambi) is the fallback for match discovery and comparison.
+
+Conventions
+-----------
+- All `fetch_*` functions return a list of "odds rows":
+      {"market_key": str, "market_label": str,
+       "selection_key": str, "selection_label": str,
+       "line": float|None, "odd": float|None,
+       "ok": bool, "note": str}
+- They never raise. Network/parse failure → empty list (or a single ok=False
+  placeholder row when we want to surface a diagnostic).
+- `market_key` is a CANONICAL key meant to align across operators:
+    * "MATCH_RESULT_FT"    full-time 1X2
+    * "DOUBLE_CHANCE_FT"   1X / 12 / X2
+    * "BTTS_FT"            both teams to score
+    * "OVER_UNDER_FT@2.5"  totals (line baked in)
+    * "ASIAN_HANDICAP_FT@-1.5"
+    * "KAMBI_<criterionId>[@line]"  fallback for Kambi-native markets that
+      didn't map to a canonical type — these still match between two Kambi
+      brands (711 ↔ Unibet) but won't match TOTO.
+- `selection_key` is also canonicalized where possible: "1" / "X" / "2" for
+  match result, "OVER" / "UNDER" for totals, "YES" / "NO" for BTTS, etc.
+"""
+import json
+import re
+import subprocess
+import threading
+import time
+import unicodedata
+import urllib.parse
+import urllib.request
+from datetime import datetime, timezone
+
+UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+      "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36")
+
+# ---------- helpers ----------
+
+def _http_get(url, timeout=12, headers=None):
+    req = urllib.request.Request(url, headers={"User-Agent": UA, **(headers or {})})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read()
+
+def _http_get_json(url, timeout=12, headers=None):
+    return json.loads(_http_get(url, timeout, headers).decode("utf-8"))
+
+_TEAM_ALIASES = {
+    "psg": "paris saint germain",
+    "atl": "atletico",
+    "atl madrid": "atletico madrid",
+    "atletico": "atletico madrid",
+    "real": "real madrid",
+    "bayern": "bayern munchen",
+    "bayern munich": "bayern munchen",
+    "spurs": "tottenham",
+    "man utd": "manchester united",
+    "man city": "manchester city",
+    "inter": "internazionale",
+    "fenerbahce": "fenerbahce",
+    "galatasaray": "galatasaray",
+    "besiktas": "besiktas",
+}
+
+def _normalize_team(s):
+    if not s:
+        return ""
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = s.lower().strip()
+    if s in _TEAM_ALIASES:
+        s = _TEAM_ALIASES[s]
+    for junk in [" fc", " cf", " ac", " sc", " s.c.", " a.c.", " c.f.",
+                 "fc ", "afc ", " club", " bfc", " sk", " as", " fk", "fk ",
+                 " bb", " gsk", " bld", " bel", " belediye", " spor kulubu"]:
+        s = s.replace(junk, " ")
+    s = re.sub(r"[^a-z0-9]+", " ", s).strip()
+    return s
+
+def _team_match(a, b):
+    na, nb = _normalize_team(a), _normalize_team(b)
+    if not na or not nb:
+        return False
+    if na in nb or nb in na:
+        return True
+    # Space-collapsed substring — bridges "Vanspor FK" (Kambi) vs "Van Spor FK" (TOTO).
+    nas, nbs = na.replace(" ", ""), nb.replace(" ", "")
+    if nas and nbs and (nas in nbs or nbs in nas):
+        return True
+    A = [w for w in na.split() if len(w) >= 3]
+    B = [w for w in nb.split() if len(w) >= 3]
+    for wa in A:
+        for wb in B:
+            n = min(len(wa), len(wb))
+            if n >= 4 and wa[:n] == wb[:n]:
+                return True
+            if n >= 4 and wa[:4] == wb[:4]:
+                return True
+    return False
+
+def _chrome_dump(url, timeout_sec=35, virtual_time_ms=20000):
+    """Run headless Chrome and return rendered DOM bytes. Empty bytes on failure."""
+    try:
+        return subprocess.check_output([
+            "google-chrome", "--headless", "--disable-gpu", "--no-sandbox",
+            f"--user-agent={UA}",
+            "--lang=nl-NL", "--window-size=1280,3500",
+            f"--virtual-time-budget={virtual_time_ms}",
+            "--dump-dom", url,
+        ], timeout=timeout_sec, stderr=subprocess.DEVNULL)
+    except Exception:
+        return b""
+
+# ---------- Kambi (711.nl + Unibet.nl) ----------
+
+KAMBI_BRANDS = {
+    "711.nl":    "sevelevnl",
+    "Unibet.nl": "ubnl",
+}
+
+KAMBI_BASE = "https://eu-offering-api.kambicdn.com/offering/v2018"
+
+def kambi_listview(brand, league_term):
+    """Kambi listView events for a league. league_term may be 'champions_league'
+    or country-prefixed like 'england/premier_league'."""
+    url = f"{KAMBI_BASE}/{brand}/listView/football/{league_term}.json?lang=nl_NL&market=NL"
+    try:
+        d = _http_get_json(url, timeout=10)
+        return d.get("events", []) or []
+    except Exception:
+        return []
+
+def kambi_event_betoffers(brand, event_id):
+    """All bet offers for a single event (every market, not just 1X2)."""
+    url = f"{KAMBI_BASE}/{brand}/betoffer/event/{event_id}.json?lang=nl_NL&market=NL&includeParticipants=true"
+    try:
+        d = _http_get_json(url, timeout=15)
+        return d.get("betOffers", []) or []
+    except Exception:
+        return []
+
+# Kambi criterion.ids that we map to cross-operator canonical keys. Anything
+# not listed here gets a `KAMBI_<crit_id>` key — comparison still works across
+# Kambi brands (711 ↔ Unibet) but TOTO won't align with these.
+#
+# Discovered by inspecting betoffer/event payloads. Add more as we find them.
+KAMBI_CANONICAL_CRIT = {
+    1001159858: "MATCH_RESULT_FT",     # FT 1X2 (the canonical "Full Time" Match Result)
+    1000316018: "MATCH_RESULT_HT",     # 1X2 at half time
+    1001159826: "MATCH_RESULT_2H",     # 1X2 in the 2nd half
+    1001642858: "BTTS_FT",             # Both Teams To Score (FT)
+    1001642863: "BTTS_1H",             # BTTS — 1st half
+    1001642868: "BTTS_2H",             # BTTS — 2nd half
+    1001159926: "OVER_UNDER_FT",       # Total Goals (FT) — line baked into key
+    1001159532: "OVER_UNDER_1H",       # Total Goals — 1st half
+    1001243173: "OVER_UNDER_2H",       # Total Goals — 2nd half
+    1001159666: "DNB_FT",              # Draw No Bet (FT)
+    1001159884: "DNB_1H",              # Draw No Bet — 1st half
+    1001421321: "DNB_2H",              # Draw No Bet — 2nd half
+    1001159711: "HANDICAP_FT",         # European 2-way handicap
+    1001224081: "HANDICAP_3WAY_FT",    # 3-way handicap (1/X/2)
+    1001568620: "HANDICAP_3WAY_1H",
+    1002275572: "ASIAN_HANDICAP_FT",
+    1002275573: "ASIAN_HANDICAP_1H",
+    1002244276: "ASIAN_TOTAL_FT",
+    1002558602: "ASIAN_TOTAL_1H",
+    1001159967: "OVER_UNDER_HOME_FT",  # team-specific totals
+    1001159633: "OVER_UNDER_AWAY_FT",
+    1003194958: "OVER_UNDER_HOME_1H",
+    1003194959: "OVER_UNDER_HOME_2H",
+    1003194956: "OVER_UNDER_AWAY_1H",
+    1003194957: "OVER_UNDER_AWAY_2H",
+    1001159750: "FIRST_GOAL_FT",
+    1005692199: "TO_QUALIFY",
+}
+
+def _kambi_offer_line(offer):
+    """Kambi puts the handicap/total line on each outcome (in milliunits).
+    Both outcomes of a single offer share it — read from the first non-null."""
+    for o in offer.get("outcomes", []) or []:
+        ln = o.get("line")
+        if ln is not None:
+            return ln / 1000.0
+    return None
+
+# Turkish display labels for canonical market roots. The market_key keeps its
+# canonical English form for cross-operator alignment; only the *displayed*
+# label is localized.
+MARKET_LABELS_TR = {
+    "MATCH_RESULT_FT":     "Maç Sonucu",
+    "MATCH_RESULT_HT":     "İlk Yarı Sonucu",
+    "MATCH_RESULT_2H":     "İkinci Yarı Sonucu",
+    "BTTS_FT":             "Karşılıklı Gol",
+    "BTTS_1H":             "Karşılıklı Gol (İlk Yarı)",
+    "BTTS_2H":             "Karşılıklı Gol (İkinci Yarı)",
+    "DOUBLE_CHANCE_FT":    "Çifte Şans",
+    "DOUBLE_CHANCE_1H":    "Çifte Şans (İlk Yarı)",
+    "OVER_UNDER_FT":       "Alt / Üst",
+    "OVER_UNDER_1H":       "Alt / Üst (İlk Yarı)",
+    "OVER_UNDER_2H":       "Alt / Üst (İkinci Yarı)",
+    "OVER_UNDER_HOME_FT":  "Ev Sahibi Alt / Üst",
+    "OVER_UNDER_AWAY_FT":  "Deplasman Alt / Üst",
+    "OVER_UNDER_HOME_1H":  "Ev Sahibi Alt / Üst (İlk Yarı)",
+    "OVER_UNDER_HOME_2H":  "Ev Sahibi Alt / Üst (İkinci Yarı)",
+    "OVER_UNDER_AWAY_1H":  "Deplasman Alt / Üst (İlk Yarı)",
+    "OVER_UNDER_AWAY_2H":  "Deplasman Alt / Üst (İkinci Yarı)",
+    "DNB_FT":              "Beraberlikte İade",
+    "DNB_1H":              "Beraberlikte İade (İlk Yarı)",
+    "DNB_2H":              "Beraberlikte İade (İkinci Yarı)",
+    "HANDICAP_FT":         "Handikap",
+    "HANDICAP_3WAY_FT":    "Üçlü Handikap",
+    "HANDICAP_3WAY_1H":    "Üçlü Handikap (İlk Yarı)",
+    "ASIAN_HANDICAP_FT":   "Asya Handikap",
+    "ASIAN_HANDICAP_1H":   "Asya Handikap (İlk Yarı)",
+    "ASIAN_TOTAL_FT":      "Asya Alt / Üst",
+    "ASIAN_TOTAL_1H":      "Asya Alt / Üst (İlk Yarı)",
+    "FIRST_GOAL_FT":       "İlk Gol",
+    "TO_QUALIFY":          "Tur Atlama",
+}
+
+# Turkish labels for normalized selection keys. Team-name selections (used by
+# handicap markets) are NOT in this dict — they pass through unchanged.
+#
+# Note on KG: Turkish bet sites (Bilyoner, İddaa, Nesine, Misli) use
+# "KG VAR" / "KG YOK" — never "Evet/Hayır" — for Both Teams To Score, so we
+# label these "Var" / "Yok" to match the convention.
+SELECTION_LABELS_TR = {
+    "1":     "1",
+    "X":     "X",
+    "2":     "2",
+    "1X":    "1-X",
+    "12":    "1-2",
+    "X2":    "X-2",
+    "YES":   "Var",
+    "NO":    "Yok",
+    "OVER":  "Üst",
+    "UNDER": "Alt",
+}
+
+def _kambi_canonical_market(offer):
+    """Return (market_key, market_label_tr, line_or_None)."""
+    crit = offer.get("criterion") or {}
+    crit_id = crit.get("id")
+    line_f = _kambi_offer_line(offer)
+    canonical_root = KAMBI_CANONICAL_CRIT.get(crit_id)
+    if canonical_root:
+        mk = f"{canonical_root}@{line_f:g}" if line_f is not None else canonical_root
+        # Prefer Turkish label for canonical markets; fall back to englishLabel
+        label = MARKET_LABELS_TR.get(canonical_root) or crit.get("englishLabel") or "Market"
+    else:
+        suffix = f"@{line_f:g}" if line_f is not None else ""
+        mk = f"KAMBI_{crit_id}{suffix}"
+        # Unknown market — use Kambi's English label (universal) instead of Dutch.
+        label = crit.get("englishLabel") or crit.get("label") or "Market"
+    return mk, label, line_f
+
+def _kambi_canonical_selection(outcome):
+    """Map a Kambi outcome to a stable (selection_key, selection_label_tr)."""
+    eng = (outcome.get("englishLabel") or "").strip()
+    lab = (outcome.get("label") or "").strip()
+    el = eng.lower()
+    sel_key = None
+    if eng in ("1", "X", "2"):  sel_key = eng
+    elif el in ("yes", "ja"):    sel_key = "YES"
+    elif el in ("no", "nee"):    sel_key = "NO"
+    elif el == "over":           sel_key = "OVER"
+    elif el == "under":          sel_key = "UNDER"
+    if sel_key:
+        return sel_key, SELECTION_LABELS_TR.get(sel_key, sel_key)
+    # Team names (handicap markets) and other outcomes pass through using
+    # englishLabel (consistent across Kambi brands).
+    return (eng or lab or str(outcome.get("id"))), (eng or lab)
+
+def _kambi_parse_betoffers(offers):
+    rows = []
+    for offer in offers:
+        market_key, market_label, line_f = _kambi_canonical_market(offer)
+        crit_id = (offer.get("criterion") or {}).get("id")
+        for o in offer.get("outcomes", []) or []:
+            odd = o.get("odds")
+            if odd is not None:
+                odd = odd / 1000.0
+            sel_key, sel_label = _kambi_canonical_selection(o)
+            rows.append({
+                "market_key":      market_key,
+                "market_label":    market_label,
+                "selection_key":   sel_key,
+                "selection_label": sel_label,
+                "line":            line_f,
+                "odd":             odd,
+                "ok":              odd is not None,
+                "note":            f"kambi:crit={crit_id}",
+            })
+    return rows
+
+def fetch_kambi(operator, kambi_event_id, **_):
+    """Fetch all markets for one event from a Kambi brand."""
+    brand = KAMBI_BRANDS.get(operator)
+    if not brand or not kambi_event_id:
+        return []
+    offers = kambi_event_betoffers(brand, kambi_event_id)
+    if not offers:
+        return [{"market_key": "MATCH_RESULT_FT", "market_label": "Maç Sonucu",
+                 "selection_key": "1", "selection_label": "1",
+                 "line": None, "odd": None, "ok": False,
+                 "note": f"kambi:{brand} no betoffers for ev {kambi_event_id}"}]
+    return _kambi_parse_betoffers(offers)
+
+# ---------- TOTO (sport.toto.nl + sport-api.toto.nl) ----------
+#
+# TOTO's REST API only exposes the "primary" market (1X2). Their full event
+# catalog (handicaps, totals, BTTS, etc.) is delivered to their SPA via SignalR
+# WebSocket. Rather than reverse-engineering the auth+protocol, we render the
+# match page in headless Chrome — the SPA writes every market into the DOM as
+# inline JSON, which is straightforward to extract.
+#
+# Flow:
+#   1. JSON search → find event_id (fast, ~0.5s)
+#   2. Chrome dump match page (virtual-time-budget=30s) → all markets in DOM
+#   3. Walk the DOM, extract every {"id":"...", "eventId":"<id>", ...} object
+#   4. Map TOTO groupCode → canonical market_key (aligns with Kambi)
+
+def _toto_search_event(home, away, kickoff_utc_iso=None):
+    """Find a TOTO event matching (home, away). Returns event dict or None."""
+    norm_home = _normalize_team(home)
+    norm_away = _normalize_team(away)
+    queries = []
+    for src in (norm_home, norm_away):
+        for token in src.split():
+            if len(token) >= 4 and token not in queries:
+                queries.append(token)
+        if src and src not in queries:
+            queries.append(src)
+    for q in queries[:6]:
+        try:
+            d = _http_get_json(
+                f"https://sport-api.toto.nl/search?searchText={urllib.parse.quote(q)}",
+                timeout=10, headers={"Accept": "application/json"})
+        except Exception:
+            continue
+        for ev in d.get("events", []) or []:
+            name = ev.get("name", "")
+            if _team_match(home, name) and _team_match(away, name):
+                return ev
+    return None
+
+def _toto_extract_markets_from_dom(event_id, dom):
+    """Walk the rendered TOTO match-page DOM and return every market JSON.
+    Markets are embedded as inline JSON objects keyed by `eventId`. We locate
+    each `"eventId":"<event_id>"` occurrence, walk back to the opening brace
+    and forward to the balanced close, then `json.loads` the slice."""
+    markets = []
+    seen_ids = set()
+    needle = f'"eventId":"{event_id}"'
+    i = 0
+    while True:
+        i = dom.find(needle, i)
+        if i < 0:
+            break
+        # Walk back to the enclosing '{'
+        j = i
+        depth = 0
+        while j > 0:
+            ch = dom[j]
+            if ch == '}':
+                depth += 1
+            elif ch == '{':
+                if depth == 0:
+                    break
+                depth -= 1
+            j -= 1
+        # Walk forward to the matching '}'
+        k = j
+        d = 0
+        while k < len(dom):
+            ch = dom[k]
+            if ch == '{':
+                d += 1
+            elif ch == '}':
+                d -= 1
+                if d == 0:
+                    k += 1
+                    break
+            k += 1
+        try:
+            m = json.loads(dom[j:k])
+        except json.JSONDecodeError:
+            i = k
+            continue
+        if "outcomes" in m and m.get("id") not in seen_ids:
+            seen_ids.add(m["id"])
+            markets.append(m)
+        i = k
+    return markets
+
+# TOTO `groupCode` → (canonical_root, has_line). Anything not in this table
+# falls through to a TOTO-native key that won't align cross-operator.
+TOTO_GROUP_TO_CANONICAL = {
+    "MATCH_RESULT":                          ("MATCH_RESULT_FT",      False),
+    "MATCH_RESULT_1ST_HALF":                 ("MATCH_RESULT_HT",      False),
+    "MATCH_RESULT_2ND_HALF":                 ("MATCH_RESULT_2H",      False),
+    "BOTH_TEAMS_TO_SCORE":                   ("BTTS_FT",              False),
+    "BOTH_TEAMS_TO_SCORE_1ST_HALF":          ("BTTS_1H",              False),
+    "BOTH_TEAMS_TO_SCORE_2ND_HALF":          ("BTTS_2H",              False),
+    "DOUBLE_CHANCE":                         ("DOUBLE_CHANCE_FT",     False),
+    "DOUBLE_CHANCE_1ST_HALF":                ("DOUBLE_CHANCE_1H",     False),
+    "NO_BET_DRAW":                           ("DNB_FT",               False),
+    "NO_BET_DRAW_1ST_HALF":                  ("DNB_1H",               False),
+    "NO_BET_DRAW_2ND_HALF":                  ("DNB_2H",               False),
+    "ASIAN_HANDICAP":                        ("ASIAN_HANDICAP_FT",    True),
+    "ASIAN_HANDICAP_1ST_HALF":               ("ASIAN_HANDICAP_1H",    True),
+    "HANDICAP":                              ("HANDICAP_3WAY_FT",     True),
+    "HANDICAP_1ST_HALF":                     ("HANDICAP_3WAY_1H",     True),
+    "HANDICAP_2ND_HALF":                     ("HANDICAP_3WAY_2H",     True),
+    "TOTAL_GOALS_OVER/UNDER":                ("OVER_UNDER_FT",        True),
+    "TOTAL_GOALS_OVER/UNDER_1ST_HALF":       ("OVER_UNDER_1H",        True),
+    "TOTAL_GOALS_OVER/UNDER_2ND_HALF":       ("OVER_UNDER_2H",        True),
+    "TOTAL_GOALS_OVER/UNDER_HOME":           ("OVER_UNDER_HOME_FT",   True),
+    "TOTAL_GOALS_OVER/UNDER_AWAY":           ("OVER_UNDER_AWAY_FT",   True),
+    "TOTAL_GOALS_OVER/UNDER_1ST_HALF_HOME":  ("OVER_UNDER_HOME_1H",   True),
+    "TOTAL_GOALS_OVER/UNDER_2ND_HALF_HOME":  ("OVER_UNDER_HOME_2H",   True),
+    "TOTAL_GOALS_OVER/UNDER_1ST_HALF_AWAY":  ("OVER_UNDER_AWAY_1H",   True),
+    "TOTAL_GOALS_OVER/UNDER_2ND_HALF_AWAY":  ("OVER_UNDER_AWAY_2H",   True),
+}
+
+# Selection-key remaps per canonical type.
+_TOTO_SEL_3WAY    = {"H": "1", "D": "X", "L": "X", "A": "2"}        # 1/X/2 (handicap uses L for draw)
+_TOTO_SEL_OU      = {"H": "OVER", "L": "UNDER", "O": "OVER", "U": "UNDER"}
+_TOTO_SEL_BTTS    = {"Ja": "YES", "Nee": "NO", "Yes": "YES", "No": "NO"}
+_TOTO_SEL_DC      = {"1": "1X", "3": "12", "2": "X2"}               # by subType (HD/HA/DA encoded as 1/3/2)
+_TOTO_SEL_DNB     = {"H": "1", "A": "2"}
+
+_TOTO_3WAY_ROOTS  = {"MATCH_RESULT_FT", "MATCH_RESULT_HT", "MATCH_RESULT_2H",
+                     "HANDICAP_3WAY_FT", "HANDICAP_3WAY_1H", "HANDICAP_3WAY_2H"}
+_TOTO_OU_ROOTS    = {"OVER_UNDER_FT", "OVER_UNDER_1H", "OVER_UNDER_2H",
+                     "OVER_UNDER_HOME_FT", "OVER_UNDER_AWAY_FT",
+                     "OVER_UNDER_HOME_1H", "OVER_UNDER_HOME_2H",
+                     "OVER_UNDER_AWAY_1H", "OVER_UNDER_AWAY_2H"}
+_TOTO_BTTS_ROOTS  = {"BTTS_FT", "BTTS_1H", "BTTS_2H"}
+_TOTO_DC_ROOTS    = {"DOUBLE_CHANCE_FT", "DOUBLE_CHANCE_1H"}
+_TOTO_DNB_ROOTS   = {"DNB_FT", "DNB_1H", "DNB_2H"}
+
+def _toto_canonical_market(market):
+    """Return (market_key, market_label, selection_remap or None, line_or_None)."""
+    gc = market.get("groupCode") or ""
+    name = market.get("name") or gc
+    line_raw = market.get("handicapValue")
+    try:
+        line_f = float(line_raw) if line_raw is not None else None
+    except (TypeError, ValueError):
+        line_f = None
+    # TOTO stores Asian Handicap lines as integer counts of 0.25 steps
+    # (handicapValue=2 means a +0.5 line, =-6 means -1.5, etc.).
+    # Other markets (regular handicap, totals) already use plain decimals.
+    if line_f is not None and gc.startswith("ASIAN_HANDICAP"):
+        line_f = line_f / 4.0
+    canonical = TOTO_GROUP_TO_CANONICAL.get(gc)
+    if canonical:
+        root, has_line = canonical
+        mk = f"{root}@{line_f:g}" if (has_line and line_f is not None) else root
+        if root in _TOTO_3WAY_ROOTS:    sel_remap = _TOTO_SEL_3WAY
+        elif root in _TOTO_OU_ROOTS:    sel_remap = _TOTO_SEL_OU
+        elif root in _TOTO_BTTS_ROOTS:  sel_remap = _TOTO_SEL_BTTS
+        elif root in _TOTO_DC_ROOTS:    sel_remap = _TOTO_SEL_DC
+        elif root in _TOTO_DNB_ROOTS:   sel_remap = _TOTO_SEL_DNB
+        else:                           sel_remap = None  # Asian handicap etc — keep team names
+        return mk, name, sel_remap, line_f
+    # Fallback — TOTO-native key
+    line_suffix = f"@{line_f:g}" if line_f is not None else ""
+    return f"TOTO_{gc}{line_suffix}", name, None, line_f
+
+def fetch_toto(home, away, kickoff_utc_iso=None, **_):
+    """Render TOTO's match page via headless Chrome and harvest every market."""
+    try:
+        ev = _toto_search_event(home, away, kickoff_utc_iso)
+        if not ev:
+            return [{"market_key": "MATCH_RESULT_FT", "market_label": "Maç Sonucu",
+                     "selection_key": "1", "selection_label": "1",
+                     "line": None, "odd": None, "ok": False,
+                     "note": "toto: no event match"}]
+        event_id = str(ev["id"])
+        url = f"https://sport.toto.nl/wedden/wedstrijd/{event_id}"
+        dom = _chrome_dump(url, timeout_sec=60, virtual_time_ms=30000).decode("utf-8", "replace")
+        if not dom:
+            return [{"market_key": "MATCH_RESULT_FT", "market_label": "Maç Sonucu",
+                     "selection_key": "1", "selection_label": "1",
+                     "line": None, "odd": None, "ok": False,
+                     "note": f"toto: chrome dump failed for ev {event_id}"}]
+        markets = _toto_extract_markets_from_dom(event_id, dom)
+        if not markets:
+            return [{"market_key": "MATCH_RESULT_FT", "market_label": "Maç Sonucu",
+                     "selection_key": "1", "selection_label": "1",
+                     "line": None, "odd": None, "ok": False,
+                     "note": f"toto: 0 markets in DOM for ev {event_id}"}]
+        # MATCH_RESULT_2 is the "early payout" version — different odds, would
+        # double up on MATCH_RESULT_FT. Drop it and prefer plain MATCH_RESULT
+        # for cross-operator comparison.
+        if any(m.get("groupCode") == "MATCH_RESULT" for m in markets):
+            markets = [m for m in markets if m.get("groupCode") != "MATCH_RESULT_2"]
+        rows = []
+        for m in markets:
+            if m.get("status") and m["status"] != "ACTIVE":
+                continue
+            mk, mlabel, sel_remap, line_f = _toto_canonical_market(m)
+            for o in m.get("outcomes", []) or []:
+                if not o.get("active", True) or not o.get("displayed", True):
+                    continue
+                prices = o.get("prices") or []
+                if not prices:
+                    continue
+                odd = prices[0].get("decimal")
+                osub = o.get("subType") or ""
+                olab = o.get("name") or osub
+                if sel_remap and osub in sel_remap:
+                    sk = sel_remap[osub]
+                elif sel_remap and olab in sel_remap:
+                    sk = sel_remap[olab]
+                else:
+                    # TOTO uses subType="-" for many markets (BTTS variants,
+                    # team-specific bets); falling back to subType collides
+                    # every outcome onto one selection_key. Prefer the
+                    # outcome name when the subType is unhelpful.
+                    sk = olab if osub in ("", "-") else osub
+                rows.append({
+                    "market_key":      mk,
+                    "market_label":    mlabel,
+                    "selection_key":   sk,
+                    "selection_label": olab,
+                    "line":            line_f,
+                    "odd":             odd,
+                    "ok":              odd is not None,
+                    "note":            f"toto: ev {event_id} mkt {m.get('id')} {m.get('groupCode')}",
+                })
+        if not rows:
+            rows.append({"market_key": "MATCH_RESULT_FT", "market_label": "Maç Sonucu",
+                         "selection_key": "1", "selection_label": "1",
+                         "line": None, "odd": None, "ok": False,
+                         "note": f"toto: parsed 0 outcomes for ev {event_id}"})
+        return rows
+    except Exception as e:
+        return [{"market_key": "MATCH_RESULT_FT", "market_label": "Maç Sonucu",
+                 "selection_key": "1", "selection_label": "1",
+                 "line": None, "odd": None, "ok": False,
+                 "note": f"toto err: {e}"}]
+
+# ---------- TonyBet.nl (platform.tonybet.nl) ----------
+#
+# TonyBet runs on a Sportradar-derived backend with a public-ish JSON API.
+# The catalog is paginated by `sportCategoryId` (Sportradar category ID).
+# Three categories cover all 5 of our leagues:
+#   - 101: UEFA (Champions League + Europa League)
+#   - 41:  England (Premier League)
+#   - 111: Turkey (Süper Lig + 1. Lig)
+#
+# Markets are identified by integer `id` (TonyBet-internal). We map only the
+# canonical types we want to compare cross-operator. Lines (when present) live
+# in the `specifiers` string — e.g. `"hcp=-1"` for Asian Handicap. TonyBet
+# typically exposes only the main line per market type (not all variants),
+# unlike Kambi which lists every line as a separate offer.
+
+TONYBET_CATEGORIES = (101, 41, 111)
+
+# market.id → (canonical_root, has_line, outcome_id → selection_key)
+TONYBET_MARKETS = {
+    621: ("MATCH_RESULT_FT",   False, {1: "1", 2: "X", 3: "2"}),
+    589: ("BTTS_FT",           False, {74: "YES", 76: "NO"}),
+    868: ("OVER_UNDER_FT",     True,  {4: "OVER", 5: "UNDER"}),
+    557: ("ASIAN_HANDICAP_FT", True,  {1714: "_HOME", 1715: "_AWAY"}),
+    721: ("DOUBLE_CHANCE_FT",  False, {436: "1X", 438: "12", 440: "X2"}),
+}
+
+# Cached per-category fetch — bulk-refresh hits the same API many times,
+# this collapses redundant calls within a 60s window.
+_tonybet_cache = {}                       # cat_id → (timestamp, data dict)
+_tonybet_cache_lock = threading.Lock()
+_TONYBET_CACHE_TTL = 60.0
+
+def _tonybet_fetch_category(cat_id):
+    now = time.time()
+    with _tonybet_cache_lock:
+        cached = _tonybet_cache.get(cat_id)
+        if cached and (now - cached[0]) < _TONYBET_CACHE_TTL:
+            return cached[1]
+    qs = (
+        "lang=nl&relations=odds&relations=competitors&relations=league"
+        "&oddsExists_eq=1&main=1&period=0&limit=150&status_in=0&isLive=false"
+        f"&sportCategoryId_eq={cat_id}"
+    )
+    try:
+        d = _http_get_json(
+            f"https://platform.tonybet.nl/api/event/list?{qs}", timeout=15)
+        data = d.get("data", {})
+    except Exception:
+        return None
+    with _tonybet_cache_lock:
+        _tonybet_cache[cat_id] = (now, data)
+    return data
+
+def _tonybet_parse_line(spec):
+    """`specifiers` is a string like 'hcp=-1', 'total=2.5'. Returns float or None."""
+    if not spec:
+        return None
+    parts = spec.split("=", 1)
+    if len(parts) != 2:
+        return None
+    try:
+        return float(parts[1])
+    except ValueError:
+        return None
+
+def fetch_tonybet(home, away, kickoff_utc_iso=None, **_):
+    """Find the TonyBet event that matches our (home, away, kickoff) and pull
+    every canonical-mappable market off it."""
+    target_dt = None
+    if kickoff_utc_iso:
+        try:
+            target_dt = datetime.fromisoformat(kickoff_utc_iso.replace("Z", "+00:00"))
+        except Exception:
+            target_dt = None
+
+    found_event = None
+    found_odds = []
+    found_c1 = found_c2 = ""
+
+    for cat in TONYBET_CATEGORIES:
+        data = _tonybet_fetch_category(cat)
+        if not data:
+            continue
+        comp_by_id = {c["id"]: c for c in data.get("relations", {}).get("competitors", [])}
+        odds_by_ev = data.get("relations", {}).get("odds", {}) or {}
+        for ev in data.get("items", []):
+            c1 = comp_by_id.get(ev.get("competitor1Id")) or {}
+            c2 = comp_by_id.get(ev.get("competitor2Id")) or {}
+            n1, n2 = c1.get("name", ""), c2.get("name", "")
+            # Time gating first (fast filter)
+            if target_dt:
+                ev_time = ev.get("time")
+                try:
+                    ev_dt = datetime.fromisoformat(ev_time).replace(tzinfo=timezone.utc)
+                    if abs((ev_dt - target_dt).total_seconds()) > 1800:
+                        continue
+                except Exception:
+                    continue
+            if _team_match(home, n1) and _team_match(away, n2):
+                found_event = ev
+                found_odds = odds_by_ev.get(str(ev["id"]), [])
+                found_c1, found_c2 = n1, n2
+                break
+        if found_event:
+            break
+
+    if not found_event:
+        return [{"market_key": "MATCH_RESULT_FT", "market_label": "Maç Sonucu",
+                 "selection_key": "1", "selection_label": "1",
+                 "line": None, "odd": None, "ok": False,
+                 "note": "tonybet: no event match"}]
+
+    rows = []
+    for m in found_odds:
+        mapping = TONYBET_MARKETS.get(m.get("id"))
+        if not mapping:
+            continue
+        canonical_root, has_line, sel_remap = mapping
+        line_f = None
+        if has_line:
+            line_f = _tonybet_parse_line(m.get("specifiers"))
+            if line_f is None and canonical_root == "OVER_UNDER_FT":
+                line_f = 2.5  # TonyBet ships only the main OU line; default to 2.5 if missing
+
+        market_key = (
+            f"{canonical_root}@{line_f:g}"
+            if has_line and line_f is not None
+            else canonical_root
+        )
+        market_label = MARKET_LABELS_TR.get(canonical_root, canonical_root)
+
+        for o in m.get("outcomes", []) or []:
+            if o.get("active", 1) != 1:
+                continue
+            odd = o.get("odds")
+            if odd is None:
+                continue
+            sk = sel_remap.get(o.get("id")) if sel_remap else None
+            if not sk:
+                continue
+            # Asian Handicap selections are team names — use the names from
+            # our Kambi match input so they line up cross-operator.
+            if sk == "_HOME":
+                sk, sl = home, home
+            elif sk == "_AWAY":
+                sk, sl = away, away
+            else:
+                sl = SELECTION_LABELS_TR.get(sk, sk)
+            rows.append({
+                "market_key":      market_key,
+                "market_label":    market_label,
+                "selection_key":   sk,
+                "selection_label": sl,
+                "line":            line_f,
+                "odd":             odd,
+                "ok":              True,
+                "note":            f"tonybet: ev {found_event['id']} mkt {m.get('id')}",
+            })
+
+    if not rows:
+        rows.append({"market_key": "MATCH_RESULT_FT", "market_label": "Maç Sonucu",
+                     "selection_key": "1", "selection_label": "1",
+                     "line": None, "odd": None, "ok": False,
+                     "note": f"tonybet: ev {found_event['id']} no canonical markets"})
+    return rows
+
+# ---------- Operator registry ----------
+
+OPERATORS = [
+    # name, license, fetch_fn, is_reference
+    ("711.nl",     "KSA", fetch_kambi,   True),    # reference (Kambi platform — deepest catalog)
+    ("Unibet.nl",  "KSA", fetch_kambi,   False),   # Kambi platform
+    ("TOTO.nl",    "KSA", fetch_toto,    False),   # Headless Chrome (SignalR-only API)
+    ("TonyBet.nl", "KSA", fetch_tonybet, False),   # Sportradar-derived JSON API
+]
+
+REFERENCE_OPERATOR = "711.nl"
+FALLBACK_OPERATOR = "Unibet.nl"
+
+# ---------- Match discovery ----------
+
+# Kambi league_terms — slash-separated for country-scoped leagues.
+# If a term turns out to be wrong for a brand, the league just shows empty;
+# tweak here.
+COMPETITIONS = [
+    ("UEFA Şampiyonlar Ligi",     "champions_league"),
+    ("UEFA Avrupa Ligi",          "europa_league"),
+    ("Premier Lig (İngiltere)",   "england/premier_league"),
+    ("Süper Lig",                 "turkey/super_lig"),
+    ("1. Lig",                    "turkey/1__lig"),
+]
+
+def discover_matches():
+    """List upcoming fixtures across all configured competitions.
+    Reference brand (711) first; if a league returns nothing, fall back to Unibet."""
+    out = []
+    seen_ids = set()
+    for comp_name, term in COMPETITIONS:
+        events = kambi_listview(KAMBI_BRANDS[REFERENCE_OPERATOR], term)
+        if not events:
+            events = kambi_listview(KAMBI_BRANDS[FALLBACK_OPERATOR], term)
+        for ev in events:
+            event = ev.get("event", {})
+            state = event.get("state")
+            if state and state != "NOT_STARTED":
+                continue
+            kid = event.get("id")
+            if kid in seen_ids:
+                continue
+            seen_ids.add(kid)
+            out.append({
+                "competition":     comp_name,
+                "league_term":     term,
+                "home":            event.get("homeName") or "",
+                "away":            event.get("awayName") or "",
+                "kickoff_utc_iso": event.get("start") or "",
+                "kambi_event_id":  kid,
+            })
+    out.sort(key=lambda m: (m["competition"], m["kickoff_utc_iso"] or ""))
+    return out
+
+def fetch_all_for_match(match):
+    """Run every operator's fetcher for one match. Returns list of odds rows
+    annotated with operator + license."""
+    rows = []
+    for name, lic, fn, _ref in OPERATORS:
+        try:
+            opr = fn(operator=name,
+                     kambi_event_id=match.get("kambi_event_id"),
+                     home=match.get("home"),
+                     away=match.get("away"),
+                     kickoff_utc_iso=match.get("kickoff_utc_iso"),
+                     league_term=match.get("league_term"))
+        except Exception as e:
+            opr = [{"market_key": "MATCH_RESULT_FT", "market_label": "Maç Sonucu",
+                    "selection_key": "1", "selection_label": "1",
+                    "line": None, "odd": None, "ok": False,
+                    "note": f"{name} err: {e}"}]
+        for r in opr:
+            r["operator"] = name
+            r["license"] = lic
+            rows.append(r)
+    return rows
