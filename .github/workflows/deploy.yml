@@ -43,16 +43,27 @@ jobs:
 
       # rsync everything except runtime state, build inputs, and .git history.
       # web/dist/ IS shipped (CI-built); web/node_modules and web/src are not.
+      #
+      # CRITICAL: --delete will wipe anything at the destination that isn't in
+      # the source. The kindabet user's $HOME == /opt/kindabet, so we must
+      # exclude /.ssh/ and other home-dir state — otherwise the deploy key
+      # we just used to log in gets deleted, locking out future runs.
       - name: rsync to server
         env:
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
         run: |
           rsync -az --delete \
-            --exclude='.git' \
-            --exclude='.venv' \
+            --exclude='/.git' \
+            --exclude='/.venv' \
+            --exclude='/.ssh' \
+            --exclude='/.npm' \
+            --exclude='/.cache' \
+            --exclude='/.bash_history' \
+            --exclude='/.bashrc' \
+            --exclude='/.profile' \
+            --exclude='/data' \
             --exclude='__pycache__' \
-            --exclude='data' \
             --exclude='web/node_modules' \
             --exclude='web/src' \
             --exclude='web/.vite' \
