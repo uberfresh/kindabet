@@ -564,10 +564,19 @@ def fetch_toto(home, away, kickoff_utc_iso=None, **_):
 TONYBET_CATEGORIES = (101, 41, 111)
 
 # market.id → (canonical_root, has_line, outcome_id → selection_key)
+#
+# Note on OU: market 868 (Total Goals Over/Under) is intentionally NOT mapped.
+# TonyBet's API returns OU outcomes with NO line specifier — `specifiers`,
+# `extendedSpecifiers`, and `marketMetadata` are all null. Without the line
+# we can't safely align with Kambi's per-line OU markets (which exist at
+# 0.5/1.5/2.5/3.5/4.5/5.5). Defaulting to 2.5 was wrong: a Hatayspor match's
+# main line might be 3.5 (small Turkish league) while a Brighton-Wolves
+# match's might be 1.5 (high-scoring), and we'd be comparing apples to
+# oranges. Asian Handicap (557) is fine because it carries `hcp=X` in
+# specifiers, so we know the line for those.
 TONYBET_MARKETS = {
     621: ("MATCH_RESULT_FT",   False, {1: "1", 2: "X", 3: "2"}),
     589: ("BTTS_FT",           False, {74: "YES", 76: "NO"}),
-    868: ("OVER_UNDER_FT",     True,  {4: "OVER", 5: "UNDER"}),
     557: ("ASIAN_HANDICAP_FT", True,  {1714: "_HOME", 1715: "_AWAY"}),
     721: ("DOUBLE_CHANCE_FT",  False, {436: "1X", 438: "12", 440: "X2"}),
 }

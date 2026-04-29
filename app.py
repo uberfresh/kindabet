@@ -21,7 +21,11 @@ import scrapers
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _DIST = os.path.join(_HERE, "web", "dist")
 
-app = Flask(__name__, static_folder=_DIST, static_url_path="")
+# static_folder=None disables Flask's auto-static handler. The SPA catch-all
+# at the bottom of this file serves files from web/dist/ for known asset
+# paths and falls back to index.html for everything else (so deep links like
+# /firsatlar and /match/42 work on hard refresh).
+app = Flask(__name__, static_folder=None)
 db.init()
 
 _pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="refresh")
