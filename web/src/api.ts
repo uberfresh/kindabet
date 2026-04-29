@@ -1,6 +1,9 @@
 // API contract — mirrors what app.py returns. Keep in sync with the Flask
 // routes; if the backend shape drifts, TypeScript will scream.
 
+// Why this operator's cell is empty (shown to the user as a small pill).
+export type OddStatus = "ok" | "na_match" | "na_market" | "na_selection" | "na_error";
+
 export type OperatorOdd = {
   operator: string;
   odd: number | null;
@@ -8,6 +11,7 @@ export type OperatorOdd = {
   note: string | null;
   taken_at: string | null;
   diff_pct: number | null;
+  status: OddStatus;
 };
 
 export type Selection = {

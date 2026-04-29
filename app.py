@@ -211,9 +211,31 @@ def _localize_selection_label(selection_key, stored_label):
     return scrapers.SELECTION_LABELS_TR.get(selection_key) or stored_label or selection_key
 
 
-def _build_market_view(rows, reference_operator):
+def _build_market_view(rows, reference_operator, all_operators=None):
     """Pivot flat odds rows into the nested market → selection → operator shape
-    the frontend renders."""
+    the frontend renders. Operators that DON'T have data for a given
+    (market, selection) get an injected placeholder entry with a `status`
+    code so the UI can render a small "maç yok / market yok / hata" pill
+    instead of a meaningless dash."""
+    if all_operators is None:
+        all_operators = []
+
+    # Per-operator state, derived in one pass:
+    #   op_with_data[op]    — at least one ok=1 odd for this match
+    #   op_markets[op]      — set of market_keys the operator had data for
+    #   op_error_note[op]   — the most informative note from a failed row
+    op_with_data = set()
+    op_markets   = defaultdict(set)
+    op_error_note = {}
+    for r in rows:
+        op = r["operator"]
+        if r.get("ok") and r.get("odd") is not None:
+            op_with_data.add(op)
+            op_markets[op].add(r["market_key"])
+        elif r.get("note"):
+            op_error_note[op] = r["note"]
+
+    # Pivot real rows.
     markets = {}
     for r in rows:
         mk = r["market_key"]
@@ -229,32 +251,59 @@ def _build_market_view(rows, reference_operator):
             "selection_label": _localize_selection_label(sk, r["selection_label"]),
             "ops":             {},
         })
+        # Skip placeholder rows (ok=0, odd=None) — they carry an op-level
+        # diagnostic note that we already captured in op_error_note above.
+        if not r.get("ok") or r.get("odd") is None:
+            continue
         s["ops"][r["operator"]] = {
             "operator": r["operator"],
             "odd":      r["odd"],
-            "ok":       bool(r["ok"]),
+            "ok":       True,
             "note":     r.get("note"),
             "taken_at": r.get("taken_at"),
+            "status":   "ok",
         }
 
-    # Drop markets the reference operator doesn't list (we only show what 711
-    # has, falling through to whatever else has odds for those same selections).
     out_markets = []
     for mk, m in markets.items():
-        # Keep only selections where the reference operator has an odd
         kept_selections = []
         for sk, s in m["selections"].items():
             ref = s["ops"].get(reference_operator)
+            # Drop the entire selection if the reference operator has no odd
+            # for it — we anchor everything to 711's catalog.
             if not ref or ref["odd"] is None:
                 continue
             ref_odd = ref["odd"]
             ops_list = []
             for op_name, op in s["ops"].items():
-                if op["odd"] is None:
-                    diff_pct = None
-                else:
-                    diff_pct = (op["odd"] - ref_odd) / ref_odd * 100.0
+                diff_pct = None if op["odd"] is None else (op["odd"] - ref_odd) / ref_odd * 100.0
                 ops_list.append({**op, "diff_pct": diff_pct})
+
+            # Inject placeholder entries for operators that have NO data here
+            # so the UI can render a status pill explaining why.
+            present = {o["operator"] for o in ops_list}
+            for op in all_operators:
+                if op in present:
+                    continue
+                if op not in op_with_data:
+                    # Couldn't scrape this match at all (event not found / scrape error).
+                    status = "na_error" if op_error_note.get(op) else "na_match"
+                elif mk not in op_markets[op]:
+                    # Match scraped, but this market wasn't in the operator's catalog.
+                    status = "na_market"
+                else:
+                    # Market was in catalog but this specific selection wasn't —
+                    # rare but possible (e.g. handicap home/away naming mismatch).
+                    status = "na_selection"
+                ops_list.append({
+                    "operator": op,
+                    "odd":      None,
+                    "ok":       False,
+                    "note":     op_error_note.get(op),
+                    "taken_at": None,
+                    "diff_pct": None,
+                    "status":   status,
+                })
             ops_list.sort(key=lambda o: o["operator"])
             kept_selections.append({
                 "selection_key":   sk,
@@ -282,7 +331,8 @@ def api_match(match_id):
     if not m:
         return jsonify({"error": "not found"}), 404
     rows = db.latest_odds(match_id)
-    markets = _build_market_view(rows, scrapers.REFERENCE_OPERATOR)
+    all_ops = [name for name, _l, _f, _r in scrapers.OPERATORS]
+    markets = _build_market_view(rows, scrapers.REFERENCE_OPERATOR, all_ops)
     return jsonify({
         "match":              m,
         "reference_operator": scrapers.REFERENCE_OPERATOR,
@@ -347,7 +397,11 @@ def api_refresh(match_id):
         "ok":              True,
         "rows":            len(rows),
         "by_operator":     by_op,
-        "markets":         _build_market_view(db.latest_odds(match_id), scrapers.REFERENCE_OPERATOR),
+        "markets":         _build_market_view(
+                              db.latest_odds(match_id),
+                              scrapers.REFERENCE_OPERATOR,
+                              [name for name, _l, _f, _r in scrapers.OPERATORS],
+                          ),
         "operator_status": db.operator_status(match_id),
     })
 
