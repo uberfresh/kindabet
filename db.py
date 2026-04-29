@@ -146,28 +146,35 @@ def headline_odds(operator, market_key="MATCH_RESULT_FT"):
         return out
 
 def latest_odds(match_id):
-    """Most recent row per (operator, market_key, selection_key) for a match."""
+    """All rows from each operator's MOST RECENT refresh of this match.
+
+    Keyed on (operator) — see all_latest_odds() for rationale. If an
+    operator's last refresh didn't include a given market_key (e.g. that
+    market is no longer mapped), it doesn't appear here."""
     with _lock, conn() as c:
         rows = c.execute("""
             SELECT s.* FROM odds_snapshots s
             JOIN (
-                SELECT operator, market_key, selection_key, MAX(taken_at) AS mx
+                SELECT operator, MAX(taken_at) AS mx
                 FROM odds_snapshots
                 WHERE match_id = ?
-                GROUP BY operator, market_key, selection_key
+                GROUP BY operator
             ) t
-              ON s.operator      = t.operator
-             AND s.market_key    = t.market_key
-             AND s.selection_key = t.selection_key
-             AND s.taken_at      = t.mx
+              ON s.operator = t.operator
+             AND s.taken_at = t.mx
             WHERE s.match_id = ?
             ORDER BY s.market_key, s.selection_key, s.operator
         """, (match_id, match_id)).fetchall()
         return [dict(r) for r in rows]
 
 def all_latest_odds():
-    """Latest odds per (match, operator, market_key, selection_key) across
-    every upcoming match. Joined with match metadata for a single-pass scan."""
+    """Latest odds across every upcoming match, joined with match metadata.
+
+    Keyed on (match, operator) — only the rows from each operator's MOST
+    RECENT refresh are returned. This is intentional: if a scraper stops
+    emitting a particular market_key (e.g. we removed a wrong canonical
+    mapping), the stale rows under that key get filtered out automatically
+    on the next refresh, instead of poisoning latest_odds forever."""
     with _lock, conn() as c:
         rows = c.execute("""
             SELECT s.match_id, s.operator, s.market_key, s.market_label,
@@ -176,16 +183,14 @@ def all_latest_odds():
             FROM odds_snapshots s
             JOIN matches m ON m.id = s.match_id
             JOIN (
-                SELECT match_id, operator, market_key, selection_key, MAX(taken_at) AS mx
+                SELECT match_id, operator, MAX(taken_at) AS mx
                 FROM odds_snapshots
                 WHERE ok = 1
-                GROUP BY match_id, operator, market_key, selection_key
+                GROUP BY match_id, operator
             ) t
-              ON s.match_id      = t.match_id
-             AND s.operator      = t.operator
-             AND s.market_key    = t.market_key
-             AND s.selection_key = t.selection_key
-             AND s.taken_at      = t.mx
+              ON s.match_id = t.match_id
+             AND s.operator = t.operator
+             AND s.taken_at = t.mx
             WHERE s.ok = 1
               AND s.odd IS NOT NULL
               AND datetime(m.kickoff_utc) >= datetime('now', '-3 hours')
