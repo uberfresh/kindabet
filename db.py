@@ -1,11 +1,16 @@
 """SQLite layer for Kinda Bet.
 
-Schema supports arbitrary markets (1X2, handicaps, totals, BTTS, …) — every
-odds row is keyed by (match, operator, market_key, selection_key) and we
-keep an append-only history."""
+Schema supports arbitrary markets (1X2, handicaps, totals, BTTS, …). Every
+refresh either inserts a new row (when the odd has changed since last seen)
+or just bumps `last_seen_at` on the existing row (when unchanged). The
+`is_active` flag on each row reflects whether that market_key+selection_key
+was emitted in the operator's MOST RECENT refresh — every insert deactivates
+all prior rows for that match+operator first, then reactivates or inserts
+per emitted row."""
 import os
 import sqlite3
 import threading
+from collections import defaultdict
 from datetime import datetime, timezone
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "odds.db")
@@ -40,11 +45,20 @@ CREATE TABLE IF NOT EXISTS odds_snapshots (
     odd REAL,
     ok INTEGER NOT NULL DEFAULT 1,
     note TEXT,
-    taken_at TEXT NOT NULL DEFAULT (datetime('now'))
+    is_active INTEGER NOT NULL DEFAULT 1,
+    taken_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_seen_at TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_os_match_time ON odds_snapshots(match_id, taken_at);
-CREATE INDEX IF NOT EXISTS idx_os_match_op_time ON odds_snapshots(match_id, operator, taken_at);
-CREATE INDEX IF NOT EXISTS idx_os_match_market ON odds_snapshots(match_id, market_key);
+CREATE INDEX IF NOT EXISTS idx_os_match_time      ON odds_snapshots(match_id, taken_at);
+CREATE INDEX IF NOT EXISTS idx_os_match_op_time   ON odds_snapshots(match_id, operator, taken_at);
+CREATE INDEX IF NOT EXISTS idx_os_match_market    ON odds_snapshots(match_id, market_key);
+"""
+
+# Indexes that reference columns added by the migration. Created after the
+# ALTER TABLE in init() so they don't fail on first-time schema upgrades.
+SCHEMA_POST_MIGRATION = """
+CREATE INDEX IF NOT EXISTS idx_os_active          ON odds_snapshots(match_id, is_active, ok);
+CREATE INDEX IF NOT EXISTS idx_os_history_lookup  ON odds_snapshots(match_id, operator, market_key, selection_key, taken_at);
 """
 
 def conn():
@@ -56,6 +70,20 @@ def conn():
 def init():
     with _lock, conn() as c:
         c.executescript(SCHEMA)
+        # Idempotent column-level migrations for older deployments.
+        cols = {r[1] for r in c.execute("PRAGMA table_info(odds_snapshots)").fetchall()}
+        if "is_active" not in cols:
+            c.execute("ALTER TABLE odds_snapshots ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1")
+            # All pre-existing rows predate change-detection, so we don't
+            # know which were "currently emitted" at any past point. Mark
+            # inactive; the next refresh activates whatever's still being
+            # emitted.
+            c.execute("UPDATE odds_snapshots SET is_active = 0")
+        if "last_seen_at" not in cols:
+            c.execute("ALTER TABLE odds_snapshots ADD COLUMN last_seen_at TEXT")
+        # Indexes that depend on the migrated columns — safe to run last.
+        c.executescript(SCHEMA_POST_MIGRATION)
+        c.commit()
 
 def upsert_match(m):
     with _lock, conn() as c:
@@ -93,105 +121,153 @@ def get_match(match_id):
         return dict(r) if r else None
 
 def insert_snapshots(match_id, rows):
-    """Append one row per (operator, market_key, selection_key)."""
+    """Persist a refresh. For each (operator, market_key, selection_key):
+      * If the most recent stored row has the same `odd` AND `ok` flag,
+        we just bump its `last_seen_at` and re-activate it (no new row).
+      * Otherwise, we insert a fresh row (this is the change-history).
+    Any row that was active for this match+operator before this refresh
+    but isn't re-emitted now is left deactivated, so retired markets
+    fall out of the live view automatically."""
     if not rows:
         return None
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    payload = [
-        (match_id,
-         r.get("operator"),
-         r.get("license"),
-         r.get("market_key") or "UNKNOWN",
-         r.get("market_label") or r.get("market_key") or "Markt",
-         r.get("selection_key") or "?",
-         r.get("selection_label") or r.get("selection_key") or "?",
-         r.get("line"),
-         r.get("odd"),
-         1 if r.get("ok") else 0,
-         r.get("note"),
-         now)
-        for r in rows
-    ]
+
+    # Group incoming rows by operator so we can deactivate one operator's
+    # batch atomically without disturbing others mid-refresh.
+    by_op = defaultdict(list)
+    for r in rows:
+        by_op[r.get("operator")].append(r)
+
     with _lock, conn() as c:
-        c.executemany(
-            "INSERT INTO odds_snapshots (match_id, operator, license, market_key, market_label, "
-            "selection_key, selection_label, line, odd, ok, note, taken_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            payload)
+        for operator, op_rows in by_op.items():
+            # Step 1 — deactivate all current rows for this match+operator.
+            c.execute(
+                "UPDATE odds_snapshots SET is_active = 0 "
+                "WHERE match_id = ? AND operator = ? AND is_active = 1",
+                (match_id, operator))
+
+            # Step 2 — pre-fetch the most recent row per (market, selection)
+            # so we can decide insert-vs-reactivate without per-row queries.
+            latest = {}
+            for prev in c.execute("""
+                SELECT s.id, s.market_key, s.selection_key, s.odd, s.ok
+                FROM odds_snapshots s
+                JOIN (
+                    SELECT market_key, selection_key, MAX(id) AS mx
+                    FROM odds_snapshots
+                    WHERE match_id = ? AND operator = ?
+                    GROUP BY market_key, selection_key
+                ) t ON s.id = t.mx
+            """, (match_id, operator)).fetchall():
+                latest[(prev["market_key"], prev["selection_key"])] = prev
+
+            # Step 3 — for each emitted row, reactivate or insert.
+            insert_payload = []
+            for r in op_rows:
+                mk = r.get("market_key") or "UNKNOWN"
+                ml = r.get("market_label") or mk or "Markt"
+                sk = r.get("selection_key") or "?"
+                sl = r.get("selection_label") or sk or "?"
+                new_odd = r.get("odd")
+                new_ok  = 1 if r.get("ok") else 0
+                prev = latest.get((mk, sk))
+                if prev and prev["odd"] == new_odd and prev["ok"] == new_ok:
+                    # Same value as last time — reactivate the existing row,
+                    # bump last_seen_at, and labels (they may have been re-localized).
+                    c.execute(
+                        "UPDATE odds_snapshots SET is_active = 1, last_seen_at = ?, "
+                        "market_label = ?, selection_label = ?, line = ?, note = ? "
+                        "WHERE id = ?",
+                        (now, ml, sl, r.get("line"), r.get("note"), prev["id"]))
+                else:
+                    insert_payload.append((
+                        match_id, operator, r.get("license"),
+                        mk, ml, sk, sl,
+                        r.get("line"), new_odd, new_ok, r.get("note"),
+                        1, now, now,
+                    ))
+
+            if insert_payload:
+                c.executemany("""
+                    INSERT INTO odds_snapshots
+                    (match_id, operator, license, market_key, market_label,
+                     selection_key, selection_label, line, odd, ok, note,
+                     is_active, taken_at, last_seen_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """, insert_payload)
         c.commit()
     return now
 
 def headline_odds(operator, market_key="MATCH_RESULT_FT"):
-    """Return {match_id: {selection_key: odd}} — latest 1X2 (or any market) for
-    every match, single query. Used to render quick-scan odds on the homepage
-    without paying N round-trips to /api/match/<id>."""
+    """Return {match_id: {selection_key: odd}} — current 1X2 (or any market)
+    for every match, single query. Drives the inline quick-scan odds on the
+    homepage without N round-trips to /api/match/<id>."""
     with _lock, conn() as c:
         rows = c.execute("""
-            SELECT s.match_id, s.selection_key, s.odd
-            FROM odds_snapshots s
-            JOIN (
-                SELECT match_id, selection_key, MAX(taken_at) AS mx
-                FROM odds_snapshots
-                WHERE operator = ? AND market_key = ? AND ok = 1
-                GROUP BY match_id, selection_key
-            ) t
-              ON s.match_id      = t.match_id
-             AND s.selection_key = t.selection_key
-             AND s.taken_at      = t.mx
-            WHERE s.operator = ? AND s.market_key = ? AND s.ok = 1
-        """, (operator, market_key, operator, market_key)).fetchall()
+            SELECT match_id, selection_key, odd
+            FROM odds_snapshots
+            WHERE operator = ? AND market_key = ?
+              AND is_active = 1 AND ok = 1
+        """, (operator, market_key)).fetchall()
         out = {}
         for r in rows:
             out.setdefault(r["match_id"], {})[r["selection_key"]] = r["odd"]
         return out
 
 def latest_odds(match_id):
-    """All rows from each operator's MOST RECENT refresh of this match.
-
-    Keyed on (operator) — see all_latest_odds() for rationale. If an
-    operator's last refresh didn't include a given market_key (e.g. that
-    market is no longer mapped), it doesn't appear here."""
+    """All currently-active rows for a match. is_active=1 means the row was
+    emitted by its operator's most recent refresh."""
     with _lock, conn() as c:
         rows = c.execute("""
-            SELECT s.* FROM odds_snapshots s
-            JOIN (
-                SELECT operator, MAX(taken_at) AS mx
-                FROM odds_snapshots
-                WHERE match_id = ?
-                GROUP BY operator
-            ) t
-              ON s.operator = t.operator
-             AND s.taken_at = t.mx
-            WHERE s.match_id = ?
-            ORDER BY s.market_key, s.selection_key, s.operator
-        """, (match_id, match_id)).fetchall()
+            SELECT * FROM odds_snapshots
+            WHERE match_id = ? AND is_active = 1
+            ORDER BY market_key, selection_key, operator
+        """, (match_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def odds_history(match_id, operator=None, market_key=None, selection_key=None, limit=2000):
+    """Time series of odds rows for charting — every row is a change-point
+    (because insert_snapshots only writes a new row when the value changes).
+    Filters compose with AND. Ordered by taken_at ASC."""
+    sql = """
+        SELECT taken_at, last_seen_at, operator, market_key, market_label,
+               selection_key, selection_label, line, odd, ok, is_active
+        FROM odds_snapshots
+        WHERE match_id = ? AND ok = 1 AND odd IS NOT NULL
+    """
+    params = [match_id]
+    if operator:
+        sql += " AND operator = ?"
+        params.append(operator)
+    if market_key:
+        sql += " AND market_key = ?"
+        params.append(market_key)
+    if selection_key:
+        sql += " AND selection_key = ?"
+        params.append(selection_key)
+    sql += " ORDER BY taken_at ASC LIMIT ?"
+    params.append(limit)
+    with _lock, conn() as c:
+        rows = c.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
 def all_latest_odds():
-    """Latest odds across every upcoming match, joined with match metadata.
+    """Active odds across every upcoming match, joined with match metadata.
 
-    Keyed on (match, operator) — only the rows from each operator's MOST
-    RECENT refresh are returned. This is intentional: if a scraper stops
-    emitting a particular market_key (e.g. we removed a wrong canonical
-    mapping), the stale rows under that key get filtered out automatically
-    on the next refresh, instead of poisoning latest_odds forever."""
+    Returns rows where is_active=1, which means they were emitted by their
+    operator's most recent refresh. Stale rows from past refreshes are
+    automatically excluded."""
     with _lock, conn() as c:
         rows = c.execute("""
             SELECT s.match_id, s.operator, s.market_key, s.market_label,
                    s.selection_key, s.selection_label, s.line, s.odd, s.taken_at,
+                   s.last_seen_at,
                    m.home, m.away, m.competition, m.kickoff_utc
             FROM odds_snapshots s
             JOIN matches m ON m.id = s.match_id
-            JOIN (
-                SELECT match_id, operator, MAX(taken_at) AS mx
-                FROM odds_snapshots
-                WHERE ok = 1
-                GROUP BY match_id, operator
-            ) t
-              ON s.match_id = t.match_id
-             AND s.operator = t.operator
-             AND s.taken_at = t.mx
-            WHERE s.ok = 1
+            WHERE s.is_active = 1
+              AND s.ok = 1
               AND s.odd IS NOT NULL
               AND datetime(m.kickoff_utc) >= datetime('now', '-3 hours')
         """).fetchall()

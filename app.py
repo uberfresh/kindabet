@@ -293,6 +293,29 @@ def api_match(match_id):
     })
 
 
+@app.route("/api/match/<int:match_id>/history")
+def api_match_history(match_id):
+    """Return the odds time-series for charting. Optional filters:
+      ?operator=711.nl&market_key=MATCH_RESULT_FT&selection_key=1
+    Each row is a change-point (insert_snapshots only writes when the
+    value differs from the previous snapshot)."""
+    operator      = request.args.get("operator") or None
+    market_key    = request.args.get("market_key") or None
+    selection_key = request.args.get("selection_key") or None
+    try:
+        limit = max(1, min(10000, int(request.args.get("limit", 2000))))
+    except ValueError:
+        limit = 2000
+    rows = db.odds_history(match_id, operator=operator,
+                           market_key=market_key,
+                           selection_key=selection_key, limit=limit)
+    # Localize labels on the way out so the frontend doesn't have to
+    for r in rows:
+        r["market_label"]    = _localize_market_label(r["market_key"], r.get("market_label"))
+        r["selection_label"] = _localize_selection_label(r["selection_key"], r.get("selection_label"))
+    return jsonify({"items": rows, "count": len(rows)})
+
+
 @app.route("/api/match/<int:match_id>/refresh", methods=["POST"])
 def api_refresh(match_id):
     """Trigger a fresh scrape for one match across all 4 operators."""
