@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import type { MatchSummary } from "../api";
-import { fmtKickoffSmart, leaguePillMeta } from "../format";
+import { fmtKickoffSmart, leagueLogoPath, leaguePillMeta } from "../format";
 
 type Props = {
   match: MatchSummary;
@@ -20,6 +20,7 @@ function OddPill({ label, value }: { label: string; value: number | undefined })
 export function MatchCard({ match, showLeaguePill = false }: Props) {
   const { day, time } = fmtKickoffSmart(match.kickoff_utc);
   const [pillText, pillCls] = leaguePillMeta(match.competition);
+  const logo = leagueLogoPath(match.competition);
   const odds = match.headline_odds;
   const hasAnyOdd = !!(odds && (odds["1"] || odds.X || odds["2"]));
 
@@ -29,8 +30,9 @@ export function MatchCard({ match, showLeaguePill = false }: Props) {
         <div className="match-card-row1">
           <span className="match-card-day">{day}</span>
           <span className="match-card-time">{time}</span>
-          {showLeaguePill && pillCls && (
-            <span className={`league-pill ${pillCls} match-card-pill`}>{pillText}</span>
+          {showLeaguePill && (logo
+            ? <img className="match-card-logo" src={logo} alt="" loading="lazy" />
+            : pillCls && <span className={`league-pill ${pillCls} match-card-pill`}>{pillText}</span>
           )}
           <span className="match-card-arrow">→</span>
         </div>

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { League } from "../api";
-import { leaguePillMeta } from "../format";
+import { leagueLogoPath, leaguePillMeta } from "../format";
 import { MatchCard } from "./MatchCard";
 
 type Props = {
@@ -11,6 +11,7 @@ type Props = {
 export function LeagueCard({ league, defaultOpen = true }: Props) {
   const [open, setOpen] = useState(defaultOpen);
   const [pillText, pillCls] = leaguePillMeta(league.competition);
+  const logo = leagueLogoPath(league.competition);
 
   return (
     <details
@@ -20,7 +21,10 @@ export function LeagueCard({ league, defaultOpen = true }: Props) {
     >
       <summary className="league-summary">
         <span className="caret">▸</span>
-        <span className={"league-pill" + (pillCls ? " " + pillCls : "")}>{pillText}</span>
+        {logo
+          ? <img className="league-logo" src={logo} alt="" loading="lazy" />
+          : <span className={"league-pill" + (pillCls ? " " + pillCls : "")}>{pillText}</span>
+        }
         <span className="league-name">{league.competition}</span>
         <span className="match-count muted small">{league.matches.length} maç</span>
       </summary>

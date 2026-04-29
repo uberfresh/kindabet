@@ -11,7 +11,7 @@ import os
 import threading
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from flask import Flask, jsonify, request, send_from_directory
 
@@ -25,6 +25,11 @@ app = Flask(__name__, static_folder=_DIST, static_url_path="")
 db.init()
 
 _pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="refresh")
+
+# Auto-refresh cadence: kept in sync with deploy/kindabet-refresh.timer
+# (OnUnitActiveSec=1h). Frontend uses this + finished_at to compute the
+# countdown until the next automated sweep.
+AUTO_REFRESH_INTERVAL_SECONDS = 3600
 
 
 def _refresh_match_in_background(match_id, match_dict):
@@ -400,7 +405,20 @@ def api_refresh_all():
 @app.route("/api/refresh_all/status")
 def api_refresh_all_status():
     with _refresh_all_lock:
-        return jsonify(dict(_refresh_all_job))
+        out = dict(_refresh_all_job)
+    out["auto_refresh_interval_seconds"] = AUTO_REFRESH_INTERVAL_SECONDS
+    # Compute the next scheduled fire time from the most recent successful
+    # finish. Frontend renders a relative countdown.
+    finished = out.get("finished_at")
+    out["next_scheduled_at"] = None
+    if finished:
+        try:
+            dt = datetime.fromisoformat(finished.replace(" ", "T")).replace(tzinfo=timezone.utc)
+            nxt = dt + timedelta(seconds=AUTO_REFRESH_INTERVAL_SECONDS)
+            out["next_scheduled_at"] = nxt.strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            pass
+    return jsonify(out)
 
 
 # ---------- SPA catch-all (must be last) ----------

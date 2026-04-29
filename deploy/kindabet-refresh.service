@@ -1,0 +1,12 @@
+[Unit]
+Description=Kinda Bet — bulk refresh trigger
+After=kindabet.service
+Requires=kindabet.service
+
+[Service]
+Type=oneshot
+# Triggers the in-process bulk-refresh job. The endpoint returns immediately;
+# the actual scrape runs in a daemon thread inside gunicorn (~2-3 minutes).
+ExecStart=/usr/bin/curl -fsS --max-time 30 -X POST http://127.0.0.1:5000/api/refresh_all
+StandardOutput=journal
+StandardError=journal

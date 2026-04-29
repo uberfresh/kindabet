@@ -74,6 +74,14 @@ if [[ -f "$APP_DIR/deploy/kindabet.service" ]]; then
   systemctl enable kindabet
 fi
 
+echo "==> systemd timer (hourly auto-refresh)"
+if [[ -f "$APP_DIR/deploy/kindabet-refresh.service" ]]; then
+  cp "$APP_DIR/deploy/kindabet-refresh.service" /etc/systemd/system/kindabet-refresh.service
+  cp "$APP_DIR/deploy/kindabet-refresh.timer"   /etc/systemd/system/kindabet-refresh.timer
+  systemctl daemon-reload
+  systemctl enable --now kindabet-refresh.timer
+fi
+
 echo "==> Passwordless sudo for service restart (so the deploy user can hit it)"
 cat > /etc/sudoers.d/kindabet-restart <<EOF
 $APP_USER ALL=(root) NOPASSWD: /bin/systemctl restart kindabet, /bin/systemctl status kindabet

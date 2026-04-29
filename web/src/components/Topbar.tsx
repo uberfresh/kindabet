@@ -5,6 +5,7 @@ import {
   getRefreshAllStatus,
   type RefreshAllStatus,
 } from "../api";
+import { fmtRelative } from "../format";
 
 type Props = {
   onJobComplete: () => void;
@@ -13,7 +14,14 @@ type Props = {
 export function Topbar({ onJobComplete }: Props) {
   const [status, setStatus] = useState<RefreshAllStatus | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const [, setTick] = useState(0);  // 1Hz tick to keep relative-time live
   const pollRef = useRef<number | null>(null);
+
+  // Re-render once per second so "5 dk önce" → "6 dk önce" stays accurate.
+  useEffect(() => {
+    const t = setInterval(() => setTick((n) => n + 1), 30_000);
+    return () => clearInterval(t);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -112,6 +120,11 @@ export function Topbar({ onJobComplete }: Props) {
     );
   }
 
+  // "Son tarama" / "Sonraki tarama" — derived from job state. Only show when
+  // we have a finished_at, otherwise the data hasn't been seeded yet.
+  const lastScan = status?.finished_at ? fmtRelative(status.finished_at) : "";
+  const nextScan = status?.next_scheduled_at ? fmtRelative(status.next_scheduled_at) : "";
+
   return (
     <header className="topbar">
       <Link to="/" className="brand">
@@ -127,6 +140,14 @@ export function Topbar({ onJobComplete }: Props) {
           Fırsatlar
         </NavLink>
       </nav>
+
+      {(lastScan || nextScan) && !running && (
+        <div className="scan-info muted small">
+          {lastScan && <span>Son tarama: <strong>{lastScan}</strong></span>}
+          {lastScan && nextScan && <span className="scan-info-sep">·</span>}
+          {nextScan && <span>Sonraki: <strong>{nextScan}</strong></span>}
+        </div>
+      )}
 
       <div className="actions">
         <button

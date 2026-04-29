@@ -51,6 +51,28 @@ export function fmtTs(s: string | null | undefined): string {
   return isNaN(+d) ? s : TR_DATE_FMT.format(d);
 }
 
+// Relative TR-language time deltas. Past → "5 dk önce". Future → "12 dk sonra".
+// Returns "" if input is null/empty/invalid.
+export function fmtRelative(s: string | null | undefined): string {
+  if (!s) return "";
+  const d = new Date(s.replace(" ", "T") + "Z");
+  if (isNaN(+d)) return "";
+  const diffMs = +d - Date.now();
+  const past = diffMs < 0;
+  const abs = Math.abs(diffMs);
+  const sec = Math.round(abs / 1000);
+  const min = Math.round(sec / 60);
+  const hr = Math.round(min / 60);
+  let phrase: string;
+  if (sec < 5) phrase = "şimdi";
+  else if (sec < 60) phrase = `${sec} sn`;
+  else if (min < 60) phrase = `${min} dk`;
+  else if (hr < 24) phrase = `${hr} sa`;
+  else phrase = `${Math.round(hr / 24)} gün`;
+  if (phrase === "şimdi") return phrase;
+  return past ? `${phrase} önce` : `${phrase} sonra`;
+}
+
 // Diff% threshold for green/red coloring (anything within ±0.5% is muted).
 export type DiffSign = "good" | "bad" | "zero";
 export function diffSign(p: number | null | undefined): DiffSign {
@@ -98,4 +120,12 @@ export function leaguePillMeta(name: string): [string, string] {
   if (name.includes("Süper")) return ["SL", "sl"];
   if (name.includes("1. Lig")) return ["1L", "tff"];
   return ["–", ""];
+}
+
+// Per-league SVG logo asset path (or null if unknown). Logos live in
+// web/public/leagues/ and are served at /leagues/<file>.svg.
+export function leagueLogoPath(name: string): string | null {
+  const [, cls] = leaguePillMeta(name);
+  if (!cls) return null;
+  return `/leagues/${cls}.svg`;
 }

@@ -104,6 +104,8 @@ export type RefreshAllStatus = {
   completed: number;
   failed: number;
   error: string | null;
+  auto_refresh_interval_seconds?: number;
+  next_scheduled_at?: string | null;
 };
 
 export function startRefreshAll(): Promise<RefreshAllStatus & { ok: boolean; already_running: boolean }> {

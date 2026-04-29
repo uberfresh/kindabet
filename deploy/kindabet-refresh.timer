@@ -1,0 +1,16 @@
+[Unit]
+Description=Run Kinda Bet bulk refresh every hour
+Requires=kindabet-refresh.service
+
+[Timer]
+# Wait 2 minutes after boot before the first run (gives gunicorn time to start).
+OnBootSec=2min
+# Then every 60 minutes.
+OnUnitActiveSec=1h
+# If the system was off when a fire was due, run on next boot.
+Persistent=true
+Unit=kindabet-refresh.service
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

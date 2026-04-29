@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <defs>
+    <linearGradient id="sl-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#dc2626"/>
+      <stop offset="100%" stop-color="#991b1b"/>
+    </linearGradient>
+  </defs>
+  <circle cx="100" cy="100" r="92" fill="url(#sl-bg)" stroke="#7f1d1d" stroke-width="4"/>
+  <path d="M 145 100 a 45 45 0 1 1 -23 -39 a 36 36 0 1 0 0 78 a 45 45 0 0 1 23 -39 z"
+        fill="#ffffff" opacity="0.95"/>
+  <polygon points="155,90 162,98 172,98 164,104 167,114 158,108 149,114 152,104 144,98 154,98"
+           fill="#ffffff"/>
+  <text x="100" y="172" font-family="Inter,Arial,sans-serif" font-weight="900" font-size="22" fill="#ffffff" text-anchor="middle" letter-spacing="3">SÜPER LİG</text>
+</svg>
