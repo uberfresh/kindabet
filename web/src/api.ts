@@ -138,6 +138,7 @@ export type BiggestDiff = {
 export type BiggestDiffsResponse = {
   items: BiggestDiff[];
   total_evaluated: number;
+  computed_at: string | null;
 };
 
 export function fetchBiggestDiffs(limit = 10): Promise<BiggestDiffsResponse> {

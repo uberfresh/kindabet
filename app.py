@@ -97,6 +97,14 @@ def _bulk_refresh_worker():
         _refresh_all_job["running"] = False
         _refresh_all_job["finished_at"] = _utc_now_str()
 
+    # Fresh data → recompute the diffs cache so /firsatlar reflects the sweep.
+    try:
+        _refresh_biggest_diffs_cache()
+    except Exception as e:
+        # Don't let a cache rebuild failure crash the worker; the next refresh
+        # (or a cold-start GET) will recover.
+        print(f"[bulk-refresh] diff cache rebuild failed: {e}", flush=True)
+
 
 # ---------- pages ----------
 
@@ -302,6 +310,12 @@ def api_refresh(match_id):
         by_op[r["operator"]]["total"] += 1
         if r.get("ok"):
             by_op[r["operator"]]["with_odds"] += 1
+    # This match's odds just changed → refresh the diffs cache so Fırsatlar
+    # reflects the new prices instantly.
+    try:
+        _refresh_biggest_diffs_cache()
+    except Exception:
+        pass
     return jsonify({
         "ok":              True,
         "rows":            len(rows),
@@ -313,23 +327,22 @@ def api_refresh(match_id):
 
 # ---------- biggest cross-operator price differences ----------
 
-@app.route("/api/biggest_diffs")
-def api_biggest_diffs():
-    """Rank (match, market, selection) tuples by the % spread between the
-    best and worst operator price. Used by the Fırsatlar page to surface
-    where users can find the most value vs the worst-priced operator."""
-    try:
-        limit = max(1, min(100, int(request.args.get("limit", 10))))
-    except ValueError:
-        limit = 10
+# Cache the full sorted diff list. Recomputed only when fresh odds land
+# (after a bulk refresh or a single-match refresh) — every other GET hits
+# this in-memory copy and returns instantly.
+_biggest_diffs_lock = threading.Lock()
+_biggest_diffs_cache = {
+    "items": None,           # full sorted list, or None if uncomputed
+    "total_evaluated": 0,
+    "computed_at": None,     # UTC string
+}
 
+def _compute_biggest_diffs():
+    """Heavy pass: scan latest_odds, group, compute per-tuple spreads, sort.
+    Returns (sorted_list, total_groups_evaluated)."""
     rows = db.all_latest_odds()
-    # Group by (match_id, market_key, selection_key)
     groups = defaultdict(list)
     for r in rows:
-        # Skip operator-native fallback markets — they don't align cross-op,
-        # so any "spread" we'd compute is just noise from one operator's
-        # selection_key collisions, not real value-finding signal.
         mk = r["market_key"]
         if mk.startswith("KAMBI_") or mk.startswith("TOTO_"):
             continue
@@ -337,8 +350,6 @@ def api_biggest_diffs():
 
     out = []
     for (match_id, mk, sk), items in groups.items():
-        # Dedupe per operator (storage can have duplicate rows from old
-        # selection_key collisions); keep the freshest.
         latest_per_op = {}
         for it in items:
             if it["odd"] is None:
@@ -376,7 +387,46 @@ def api_biggest_diffs():
         })
 
     out.sort(key=lambda x: -x["diff_pct"])
-    return jsonify({"items": out[:limit], "total_evaluated": len(groups)})
+    return out, len(groups)
+
+
+def _refresh_biggest_diffs_cache():
+    """Recompute and atomically replace the cache. Safe to call from any
+    thread; safe to call repeatedly (it's just expensive)."""
+    items, total = _compute_biggest_diffs()
+    with _biggest_diffs_lock:
+        _biggest_diffs_cache["items"] = items
+        _biggest_diffs_cache["total_evaluated"] = total
+        _biggest_diffs_cache["computed_at"] = _utc_now_str()
+
+
+@app.route("/api/biggest_diffs")
+def api_biggest_diffs():
+    """Rank (match, market, selection) tuples by % spread, served from cache."""
+    try:
+        limit = max(1, min(100, int(request.args.get("limit", 10))))
+    except ValueError:
+        limit = 10
+
+    with _biggest_diffs_lock:
+        cached_items = _biggest_diffs_cache["items"]
+        cached_total = _biggest_diffs_cache["total_evaluated"]
+        cached_when  = _biggest_diffs_cache["computed_at"]
+
+    # Cold start (gunicorn just booted) — lazy-compute once. After this first
+    # call the cache stays warm until the next refresh hook fires.
+    if cached_items is None:
+        _refresh_biggest_diffs_cache()
+        with _biggest_diffs_lock:
+            cached_items = _biggest_diffs_cache["items"]
+            cached_total = _biggest_diffs_cache["total_evaluated"]
+            cached_when  = _biggest_diffs_cache["computed_at"]
+
+    return jsonify({
+        "items":           (cached_items or [])[:limit],
+        "total_evaluated": cached_total,
+        "computed_at":     cached_when,
+    })
 
 
 # ---------- bulk refresh ----------

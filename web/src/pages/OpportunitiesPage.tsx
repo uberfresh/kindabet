@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { fetchBiggestDiffs, type BiggestDiffsResponse, type BiggestDiff } from "../api";
-import { fmtKickoffSmart, fmtOdd, leaguePillMeta } from "../format";
+import { fmtKickoffSmart, fmtOdd, fmtRelative, leaguePillMeta } from "../format";
 import { Topbar } from "../components/Topbar";
 
 export default function OpportunitiesPage() {
@@ -53,6 +53,9 @@ export default function OpportunitiesPage() {
           <>
             <div className="muted small page-meta">
               {data.total_evaluated.toLocaleString("tr-TR")} pazar değerlendirildi · ilk 10 fırsat
+              {data.computed_at && (
+                <> · son hesaplama <strong>{fmtRelative(data.computed_at)}</strong></>
+              )}
             </div>
             <div className="opportunities">
               {data.items.map((it, i) => (
