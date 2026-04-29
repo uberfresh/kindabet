@@ -133,6 +133,16 @@ def kambi_listview(brand, league_term):
     except Exception:
         return []
 
+def kambi_event_betoffers(brand, event_id):
+    """All bet offers for a single event (every market, not just 1X2)."""
+    url = (f"{KAMBI_BASE}/{brand}/betoffer/event/{event_id}.json"
+           f"?lang=nl_NL&market=NL&includeParticipants=true")
+    try:
+        d = _http_get_json(url, timeout=15)
+        return d.get("betOffers", []) or []
+    except Exception:
+        return []
+
 # ---------- League logo lookup (TheSportsDB free CDN, no API key needed) ----------
 
 _logo_cache_lock = threading.Lock()
