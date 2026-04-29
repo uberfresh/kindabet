@@ -264,11 +264,60 @@ def league_logo_url(league_term):
     return badge
 
 
+# Turkish display names for Kambi country term codes. Falls back to the
+# Kambi-provided (Dutch) name when a code isn't mapped.
+_KAMBI_COUNTRY_TR = {
+    "england": "İngiltere",       "spain": "İspanya",         "italy": "İtalya",
+    "germany": "Almanya",         "france": "Fransa",         "netherlands": "Hollanda",
+    "turkey": "Türkiye",          "portugal": "Portekiz",     "belgium": "Belçika",
+    "scotland": "İskoçya",        "denmark": "Danimarka",     "norway": "Norveç",
+    "sweden": "İsveç",            "russia": "Rusya",          "argentina": "Arjantin",
+    "brazil": "Brezilya",         "usa": "ABD",               "mexico": "Meksika",
+    "japan": "Japonya",           "south_korea": "Güney Kore", "australia": "Avustralya",
+    "austria": "Avusturya",       "switzerland": "İsviçre",   "poland": "Polonya",
+    "greece": "Yunanistan",       "ukraine": "Ukrayna",       "czech_republic": "Çekya",
+    "finland": "Finlandiya",      "ireland": "İrlanda",       "wales": "Galler",
+    "croatia": "Hırvatistan",     "serbia": "Sırbistan",      "romania": "Romanya",
+    "bulgaria": "Bulgaristan",    "hungary": "Macaristan",    "slovakia": "Slovakya",
+    "slovenia": "Slovenya",       "iceland": "İzlanda",       "israel": "İsrail",
+    "saudi_arabia": "Suudi Arabistan", "uae": "BAE",          "china": "Çin",
+    "india": "Hindistan",         "egypt": "Mısır",           "south_africa": "Güney Afrika",
+    "morocco": "Fas",             "chile": "Şili",            "colombia": "Kolombiya",
+    "uruguay": "Uruguay",         "paraguay": "Paraguay",     "peru": "Peru",
+    "ecuador": "Ekvador",         "venezuela": "Venezuela",   "canada": "Kanada",
+    "algeria": "Cezayir",         "tunisia": "Tunus",         "libya": "Libya",
+    "north_macedonia": "Kuzey Makedonya", "albania": "Arnavutluk",
+    "bosnia_and_herzegovina": "Bosna Hersek",
+    "kazakhstan": "Kazakistan",   "georgia": "Gürcistan",     "armenia": "Ermenistan",
+    "azerbaijan": "Azerbaycan",   "qatar": "Katar",           "iran": "İran",
+    "iraq": "Irak",               "lebanon": "Lübnan",        "jordan": "Ürdün",
+    "syria": "Suriye",            "kenya": "Kenya",           "nigeria": "Nijerya",
+    "ghana": "Gana",              "thailand": "Tayland",      "indonesia": "Endonezya",
+    "vietnam": "Vietnam",         "malaysia": "Malezya",      "singapore": "Singapur",
+    "philippines": "Filipinler",  "new_zealand": "Yeni Zelanda",
+    "estonia": "Estonya",         "latvia": "Letonya",        "lithuania": "Litvanya",
+    "moldova": "Moldova",         "belarus": "Belarus",       "cyprus": "Kıbrıs",
+    "luxembourg": "Lüksemburg",   "malta": "Malta",           "andorra": "Andorra",
+    "san_marino": "San Marino",   "liechtenstein": "Liechtenstein",
+    "monaco": "Monako",           "faroe_islands": "Faroe Adaları",
+    "gibraltar": "Cebelitarık",
+}
+
+# 5-minute TTL cache for the league list (~80KB JSON, called from a few hot paths).
+_leagues_cache_lock = threading.Lock()
+_leagues_cache = {}  # brand -> (timestamp, list)
+_LEAGUES_CACHE_TTL = 300.0
+
 def kambi_list_football_leagues(brand):
-    """Walk Kambi's group tree and return every football league term.
-    Output: list of {league_term, display_name, country} sorted by country
-    then league name. International competitions (UCL, UEL, etc.) come back
-    with country=None."""
+    """Walk Kambi's group tree and return every football league term with a
+    fully-qualified Turkish display name like "Türkiye - Süper Lig" or
+    "Uluslararası - UEFA Champions League". Cached 5min."""
+    now = time.time()
+    with _leagues_cache_lock:
+        cached = _leagues_cache.get(brand)
+        if cached and (now - cached[0]) < _LEAGUES_CACHE_TTL:
+            return cached[1]
+
     url = f"{KAMBI_BASE}/{brand}/group.json?lang=nl_NL&market=NL&depth=3"
     try:
         d = _http_get_json(url, timeout=15)
@@ -292,27 +341,49 @@ def kambi_list_football_leagues(brand):
 
     for entry in football.get("groups", []) or []:
         children = entry.get("groups", []) or []
+        league_name = entry.get("name") or entry.get("termKey")
         if not children:
-            # International/cup competition (no country wrapper).
+            # International/cup competition (no country wrapper) — e.g. UCL, UEL.
             out.append({
                 "league_term":  entry.get("termKey"),
-                "display_name": entry.get("name"),
-                "country":      None,
+                "display_name": f"Uluslararası - {league_name}",
+                "country":      "Uluslararası",
+                "country_code": None,
             })
         else:
             country_term = entry.get("termKey")
-            country_name = entry.get("name")
+            country_nl   = entry.get("name") or country_term
+            country_tr   = _KAMBI_COUNTRY_TR.get(country_term, country_nl)
             for league in children:
                 lterm = league.get("termKey")
                 if not lterm:
                     continue
+                lname = league.get("name") or lterm
                 out.append({
                     "league_term":  f"{country_term}/{lterm}",
-                    "display_name": league.get("name"),
-                    "country":      country_name,
+                    "display_name": f"{country_tr} - {lname}",
+                    "country":      country_tr,
+                    "country_code": country_term,
                 })
+
     out.sort(key=lambda x: (x["country"] or "", x["display_name"] or ""))
+    with _leagues_cache_lock:
+        _leagues_cache[brand] = (now, out)
     return out
+
+
+def league_display_name(league_term, brand=None):
+    """Resolve a league_term to its Turkish-prefixed display name using the
+    cached league list. Returns the term itself if not found."""
+    if not league_term:
+        return league_term
+    if brand is None:
+        brand = KAMBI_BRANDS.get(REFERENCE_OPERATOR)
+    leagues = kambi_list_football_leagues(brand) if brand else []
+    for lg in leagues:
+        if lg.get("league_term") == league_term:
+            return lg.get("display_name") or league_term
+    return league_term
     """All bet offers for a single event (every market, not just 1X2)."""
     url = f"{KAMBI_BASE}/{brand}/betoffer/event/{event_id}.json?lang=nl_NL&market=NL&includeParticipants=true"
     try:
@@ -919,11 +990,11 @@ FALLBACK_OPERATOR = "Unibet.nl"
 # If a term turns out to be wrong for a brand, the league just shows empty;
 # tweak here.
 COMPETITIONS = [
-    ("UEFA Şampiyonlar Ligi",     "champions_league"),
-    ("UEFA Avrupa Ligi",          "europa_league"),
-    ("Premier Lig (İngiltere)",   "england/premier_league"),
-    ("Süper Lig",                 "turkey/super_lig"),
-    ("1. Lig",                    "turkey/1__lig"),
+    ("Uluslararası - Champions League",  "champions_league"),
+    ("Uluslararası - Europa League",     "europa_league"),
+    ("İngiltere - Premier League",       "england/premier_league"),
+    ("Türkiye - Süper Lig",              "turkey/super_lig"),
+    ("Türkiye - 1. Lig",                 "turkey/1__lig"),
 ]
 
 def discover_matches(competitions=None):

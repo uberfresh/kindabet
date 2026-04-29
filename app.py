@@ -60,13 +60,33 @@ def _utc_now_str():
 
 def _enabled_competitions():
     """Resolve the list of competitions to scan from the settings table.
-    Falls back to the hardcoded defaults when no setting is stored."""
+    Falls back to the hardcoded defaults when no setting is stored.
+
+    Display names are RE-RESOLVED from the current Kambi taxonomy so
+    legacy saved settings (e.g. plain "Ligue 1") get the new
+    Turkish-prefixed names ("Fransa - Ligue 1") transparently — no
+    user re-save required."""
     saved = db.get_setting("enabled_leagues")
     if not saved or not isinstance(saved, list) or not saved:
         return scrapers.COMPETITIONS
-    return [(item["display_name"], item["league_term"])
-            for item in saved
-            if isinstance(item, dict) and item.get("league_term")]
+
+    try:
+        leagues = scrapers.kambi_list_football_leagues(
+            scrapers.KAMBI_BRANDS[scrapers.REFERENCE_OPERATOR])
+        by_term = {lg["league_term"]: lg["display_name"] for lg in leagues}
+    except Exception:
+        by_term = {}
+
+    out = []
+    for item in saved:
+        if not isinstance(item, dict):
+            continue
+        term = item.get("league_term")
+        if not term:
+            continue
+        name = by_term.get(term) or item.get("display_name") or term
+        out.append((name, term))
+    return out
 
 
 def _enabled_league_terms():
@@ -446,9 +466,26 @@ def api_leagues_available():
 def api_settings_leagues_get():
     saved = db.get_setting("enabled_leagues")
     if not saved or not isinstance(saved, list) or not saved:
-        # No setting yet → return current defaults so the UI can pre-check them.
         saved = [{"display_name": n, "league_term": t} for n, t in scrapers.COMPETITIONS]
-    return jsonify({"enabled": saved})
+    # Always re-resolve display_names from current taxonomy so the UI shows
+    # the latest Turkish-prefixed names regardless of when the setting
+    # was first written.
+    try:
+        leagues = scrapers.kambi_list_football_leagues(
+            scrapers.KAMBI_BRANDS[scrapers.REFERENCE_OPERATOR])
+        by_term = {lg["league_term"]: lg["display_name"] for lg in leagues}
+    except Exception:
+        by_term = {}
+    enriched = []
+    for item in saved:
+        term = (item or {}).get("league_term")
+        if not term:
+            continue
+        enriched.append({
+            "league_term":  term,
+            "display_name": by_term.get(term) or item.get("display_name") or term,
+        })
+    return jsonify({"enabled": enriched})
 
 
 @app.route("/api/settings/leagues", methods=["POST"])
@@ -459,16 +496,24 @@ def api_settings_leagues_set():
     enabled = body.get("enabled")
     if not isinstance(enabled, list):
         return jsonify({"error": "enabled must be a list"}), 400
+    # Re-resolve display_names from current Kambi data on save, so even if
+    # the client sent a stale name, what we store is canonical.
+    try:
+        leagues = scrapers.kambi_list_football_leagues(
+            scrapers.KAMBI_BRANDS[scrapers.REFERENCE_OPERATOR])
+        by_term = {lg["league_term"]: lg["display_name"] for lg in leagues}
+    except Exception:
+        by_term = {}
     cleaned = []
     seen_terms = set()
     for item in enabled:
         if not isinstance(item, dict):
             continue
         term = (item.get("league_term") or "").strip()
-        name = (item.get("display_name") or "").strip()
-        if not term or not name or term in seen_terms:
+        if not term or term in seen_terms:
             continue
         seen_terms.add(term)
+        name = by_term.get(term) or (item.get("display_name") or "").strip() or term
         cleaned.append({"display_name": name, "league_term": term})
     db.set_setting("enabled_leagues", cleaned)
     return jsonify({"ok": True, "enabled": cleaned})
