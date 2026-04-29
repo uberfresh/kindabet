@@ -253,6 +253,19 @@ def headline_odds(operator, market_key="MATCH_RESULT_FT"):
             out.setdefault(r["match_id"], {})[r["selection_key"]] = r["odd"]
         return out
 
+def market_counts(operator):
+    """Return {match_id: int} — number of distinct active markets per match
+    for the given operator. Drives the "+N" chip on home-page rows."""
+    with _lock, conn() as c:
+        rows = c.execute("""
+            SELECT match_id, COUNT(DISTINCT market_key) AS n
+            FROM odds_snapshots
+            WHERE operator = ? AND is_active = 1 AND ok = 1
+            GROUP BY match_id
+        """, (operator,)).fetchall()
+        return {r["match_id"]: r["n"] for r in rows}
+
+
 def latest_odds(match_id):
     """All currently-active rows for a match. is_active=1 means the row was
     emitted by its operator's most recent refresh."""

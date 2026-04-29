@@ -34,6 +34,11 @@ export type HeadlineOdds = {
   "2"?: number;
 };
 
+export type OverUnderOdds = {
+  OVER?: number;
+  UNDER?: number;
+};
+
 export type MatchSummary = {
   id: number;
   competition: string;
@@ -45,6 +50,8 @@ export type MatchSummary = {
   discovered_at: string;
   last_refresh: string | null;
   headline_odds: HeadlineOdds | null;
+  over_under_2_5?: OverUnderOdds | null;
+  market_count?: number;
   logo_url?: string | null;
 };
 

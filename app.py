@@ -150,13 +150,17 @@ def api_matches():
     if request.args.get("sync") == "1":
         for m in scrapers.discover_matches(_enabled_competitions()):
             db.upsert_match(m)
-    matches = db.list_matches(only_upcoming=True, league_terms=_enabled_league_terms())
-    headline = db.headline_odds(scrapers.REFERENCE_OPERATOR)  # {match_id: {sel: odd}}
+    matches    = db.list_matches(only_upcoming=True, league_terms=_enabled_league_terms())
+    hl_1x2     = db.headline_odds(scrapers.REFERENCE_OPERATOR, "MATCH_RESULT_FT")
+    hl_ou25    = db.headline_odds(scrapers.REFERENCE_OPERATOR, "OVER_UNDER_FT@2.5")
+    mkt_counts = db.market_counts(scrapers.REFERENCE_OPERATOR)
     grouped = defaultdict(list)
     for m in matches:
-        m["last_refresh"]  = db.last_refresh(m["id"])
-        m["headline_odds"] = headline.get(m["id"]) or None
-        m["logo_url"]      = scrapers.league_logo_url(m.get("league_term"))
+        m["last_refresh"]    = db.last_refresh(m["id"])
+        m["headline_odds"]   = hl_1x2.get(m["id"]) or None
+        m["over_under_2_5"]  = hl_ou25.get(m["id"]) or None
+        m["market_count"]    = mkt_counts.get(m["id"], 0)
+        m["logo_url"]        = scrapers.league_logo_url(m.get("league_term"))
         grouped[m["competition"]].append(m)
     # Preserve our preferred competition order from scrapers.COMPETITIONS
     order = [name for name, _term in scrapers.COMPETITIONS]

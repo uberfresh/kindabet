@@ -1058,9 +1058,9 @@ main {
 }
 
 .featured-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 /* ============================================================
@@ -1076,124 +1076,127 @@ main {
   box-shadow: 0 0 0 3px var(--orange-soft), 0 6px 18px rgba(20, 17, 13, 0.08);
 }
 
-.match-card {
+/* TOTO-style horizontal match row */
+.match-row {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 14px 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 11px;
+  padding: 12px 16px;
+  display: grid;
+  grid-template-columns: minmax(78px, auto) minmax(190px, 1fr) auto auto;
+  align-items: center;
+  gap: 18px;
   transition: transform 120ms ease, border-color 120ms, box-shadow 160ms;
   position: relative;
-  overflow: hidden;
 }
 
-.match-card:hover {
+.match-row:hover {
   border-color: var(--border-strong);
   transform: translateY(-1px);
   box-shadow: 0 6px 18px rgba(20, 17, 13, 0.08);
 }
 
-.match-card:hover .match-card-arrow {
-  transform: translateX(3px);
-  color: var(--orange-dark);
-}
-
-.match-card-row1 {
+/* Time column */
+.match-row-when {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 12px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
   min-width: 0;
 }
-
-.match-card-day {
+.match-row-day {
   font-weight: 800;
   letter-spacing: 0.6px;
   text-transform: uppercase;
   color: var(--orange-dark);
-  font-size: 11px;
+  font-size: 10.5px;
+  line-height: 1;
 }
-
-.match-card-time {
+.match-row-time {
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   color: var(--black);
-  font-size: 14px;
+  font-size: 16px;
   line-height: 1;
 }
-
-.match-card-pill {
-  font-size: 9.5px;
-  padding: 2px 7px;
+.match-row-logo {
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
+  margin-top: 4px;
 }
 
-.match-card-arrow {
-  margin-left: auto;
+/* Teams column — vertical stack, uppercase bold like TOTO */
+.match-row-teams {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.match-row-team {
   font-size: 14px;
-  color: var(--muted);
-  transition: transform 140ms, color 120ms;
-}
-
-.match-card-teams {
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
-  align-items: center;
-  gap: 10px;
-  font-size: 15.5px;
-  font-weight: 600;
+  font-weight: 700;
   color: var(--black);
-  min-width: 0;
-}
-
-.match-card-team {
-  min-width: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.2px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  line-height: 1.25;
+  line-height: 1.2;
 }
-.match-card-team.home { text-align: right; }
-.match-card-team.away { text-align: left; }
+.match-row-team.away { color: var(--ink); opacity: 0.86; }
 
-.match-card-vs {
-  color: var(--muted);
-  font-weight: 500;
-  font-size: 13px;
+/* Market blocks — each is a labeled cluster of buttons */
+.match-row-markets {
+  display: flex;
+  gap: 14px;
+  align-items: flex-end;
 }
-
-.match-card-odds {
+.market-block {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.market-block-head {
+  text-align: center;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  font-size: 10px;
+  font-weight: 600;
+}
+.market-block-buttons {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 6px;
+  gap: 4px;
 }
+.market-block-buttons.cols-3 { grid-template-columns: repeat(3, 64px); }
+.market-block-buttons.cols-2 { grid-template-columns: repeat(2, 64px); }
 
-.oddpill {
+/* Odd button */
+.odd-btn {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 7px 6px;
-  background: var(--cream-soft);
-  border: 1px solid var(--border);
+  padding: 7px 4px;
+  background: var(--panel);
+  border: 1.5px solid var(--border);
   border-radius: 8px;
   transition: background 120ms, border-color 120ms;
   font-variant-numeric: tabular-nums;
   min-width: 0;
 }
-.match-card:hover .oddpill { background: var(--cream); border-color: var(--border-strong); }
-.oddpill.na { opacity: 0.45; }
-
-.oddpill-label {
+.match-row:hover .odd-btn { border-color: var(--border-strong); }
+.odd-btn.na { opacity: 0.45; }
+.odd-btn-label {
   font-size: 10px;
   font-weight: 800;
   color: var(--orange-dark);
-  letter-spacing: 0.6px;
+  letter-spacing: 0.5px;
   line-height: 1;
+  text-transform: uppercase;
 }
-
-.oddpill-value {
+.odd-btn-value {
   font-size: 14.5px;
   font-weight: 700;
   color: var(--black);
@@ -1201,12 +1204,29 @@ main {
   line-height: 1;
 }
 
-.match-card-cold-strip {
+/* Right-edge "+N" market count chip */
+.match-row-count {
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--orange-dark);
+  background: var(--cream-soft);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  padding: 6px 12px;
+  white-space: nowrap;
+  align-self: center;
+}
+.match-row-count.empty { color: var(--muted); background: transparent; }
+
+/* "henüz oran yok" strip when no data yet — sits below the row, full width */
+.match-row-cold-strip {
+  grid-column: 1 / -1;
   font-size: 11px;
   color: var(--muted);
   font-style: italic;
-  margin-top: -3px;
   text-align: center;
+  margin-top: -3px;
 }
 
 /* ============================================================
@@ -1452,8 +1472,24 @@ main {
   .search { max-width: 100%; min-width: 0; }
   .search-shortcut { display: none; }
 
-  .featured-grid { grid-template-columns: 1fr; }
-  .match-card { padding: 12px 14px; gap: 9px; }
+  .match-row {
+    grid-template-columns: auto 1fr;
+    grid-template-areas:
+      "when teams"
+      "markets markets"
+      "count count";
+    gap: 10px 12px;
+    padding: 12px 14px;
+  }
+  .match-row-when    { grid-area: when; }
+  .match-row-teams   { grid-area: teams; }
+  .match-row-markets { grid-area: markets; justify-content: space-between; }
+  .match-row-count   { grid-area: count; justify-self: end; }
+  .match-row-team { font-size: 13px; }
+  .market-block-buttons.cols-3 { grid-template-columns: repeat(3, 1fr); }
+  .market-block-buttons.cols-2 { grid-template-columns: repeat(2, 1fr); }
+  .market-block { flex: 1; min-width: 0; }
+  .match-row-markets { flex: 1; }
 
   .match-hero { padding: 18px 18px; }
   .match-hero-teams { font-size: 22px; gap: 10px; flex-wrap: nowrap; }
