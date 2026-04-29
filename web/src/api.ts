@@ -45,6 +45,7 @@ export type MatchSummary = {
   discovered_at: string;
   last_refresh: string | null;
   headline_odds: HeadlineOdds | null;
+  logo_url?: string | null;
 };
 
 export type League = {
@@ -125,6 +126,7 @@ export type BiggestDiff = {
   home: string;
   away: string;
   competition: string;
+  logo_url?: string | null;
   kickoff_utc: string;
   market_key: string;
   market_label: string;
@@ -155,6 +157,7 @@ export type LeagueOption = {
   league_term: string;
   display_name: string;
   country: string | null;
+  logo_url?: string | null;
 };
 
 export type AvailableLeaguesResponse = { leagues: LeagueOption[] };

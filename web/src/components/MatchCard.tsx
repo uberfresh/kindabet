@@ -20,7 +20,8 @@ function OddPill({ label, value }: { label: string; value: number | undefined })
 export function MatchCard({ match, showLeaguePill = false }: Props) {
   const { day, time } = fmtKickoffSmart(match.kickoff_utc);
   const [pillText, pillCls] = leaguePillMeta(match.competition);
-  const logo = leagueLogoPath(match.competition);
+  // Prefer the server-resolved logo (TheSportsDB CDN) over the local SVG fallback.
+  const logo = match.logo_url || leagueLogoPath(match.competition);
   const odds = match.headline_odds;
   const hasAnyOdd = !!(odds && (odds["1"] || odds.X || odds["2"]));
 

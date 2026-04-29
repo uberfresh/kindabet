@@ -11,7 +11,8 @@ type Props = {
 export function LeagueCard({ league, defaultOpen = true }: Props) {
   const [open, setOpen] = useState(defaultOpen);
   const [pillText, pillCls] = leaguePillMeta(league.competition);
-  const logo = leagueLogoPath(league.competition);
+  // The first match in this league carries the server-resolved logo URL.
+  const logo = league.matches[0]?.logo_url || leagueLogoPath(league.competition);
 
   return (
     <details

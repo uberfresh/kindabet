@@ -154,8 +154,9 @@ def api_matches():
     headline = db.headline_odds(scrapers.REFERENCE_OPERATOR)  # {match_id: {sel: odd}}
     grouped = defaultdict(list)
     for m in matches:
-        m["last_refresh"] = db.last_refresh(m["id"])
+        m["last_refresh"]  = db.last_refresh(m["id"])
         m["headline_odds"] = headline.get(m["id"]) or None
+        m["logo_url"]      = scrapers.league_logo_url(m.get("league_term"))
         grouped[m["competition"]].append(m)
     # Preserve our preferred competition order from scrapers.COMPETITIONS
     order = [name for name, _term in scrapers.COMPETITIONS]
@@ -348,6 +349,7 @@ def api_match(match_id):
     rows = db.latest_odds(match_id)
     all_ops = [name for name, _l, _f, _r in scrapers.OPERATORS]
     markets = _build_market_view(rows, scrapers.REFERENCE_OPERATOR, all_ops)
+    m["logo_url"] = scrapers.league_logo_url(m.get("league_term"))
     return jsonify({
         "match":              m,
         "reference_operator": scrapers.REFERENCE_OPERATOR,
@@ -425,11 +427,14 @@ def api_refresh(match_id):
 
 @app.route("/api/leagues/available")
 def api_leagues_available():
-    """Discover all football leagues Kambi exposes for our reference brand.
-    Falls back to Unibet if 711 returns nothing (rare)."""
+    """Discover all football leagues Kambi exposes for our reference brand,
+    enriched with TheSportsDB badge URLs where available. Logo lookups are
+    cached in-process for the lifetime of the gunicorn worker."""
     leagues = scrapers.kambi_list_football_leagues(scrapers.KAMBI_BRANDS[scrapers.REFERENCE_OPERATOR])
     if not leagues:
         leagues = scrapers.kambi_list_football_leagues(scrapers.KAMBI_BRANDS[scrapers.FALLBACK_OPERATOR])
+    for lg in leagues:
+        lg["logo_url"] = scrapers.league_logo_url(lg.get("league_term"))
     return jsonify({"leagues": leagues})
 
 
@@ -511,6 +516,7 @@ def _compute_biggest_diffs():
             "home":             head["home"],
             "away":             head["away"],
             "competition":      head["competition"],
+            "logo_url":         scrapers.league_logo_url(head.get("league_term")),
             "kickoff_utc":      head["kickoff_utc"],
             "market_key":       mk,
             "market_label":     _localize_market_label(mk, head["market_label"]),

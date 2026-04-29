@@ -302,7 +302,7 @@ def all_latest_odds():
             SELECT s.match_id, s.operator, s.market_key, s.market_label,
                    s.selection_key, s.selection_label, s.line, s.odd, s.taken_at,
                    s.last_seen_at,
-                   m.home, m.away, m.competition, m.kickoff_utc
+                   m.home, m.away, m.competition, m.kickoff_utc, m.league_term
             FROM odds_snapshots s
             JOIN matches m ON m.id = s.match_id
             WHERE s.is_active = 1

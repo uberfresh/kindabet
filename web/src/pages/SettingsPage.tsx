@@ -169,6 +169,9 @@ export default function SettingsPage() {
                             checked={selected.has(lg.league_term)}
                             onChange={() => toggle(lg.league_term)}
                           />
+                          {lg.logo_url
+                            ? <img className="settings-league-logo" src={lg.logo_url} alt="" loading="lazy" />
+                            : <span className="settings-league-logo-blank" aria-hidden="true" />}
                           <span className="settings-league-name">{lg.display_name}</span>
                           <span className="muted small mono">{lg.league_term}</span>
                         </label>

@@ -279,6 +279,22 @@ main {
   flex-shrink: 0;
 }
 
+.opp-league-logo {
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+.settings-league-logo {
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
+  flex-shrink: 0;
+  filter: drop-shadow(0 1px 2px rgba(20, 17, 13, 0.06));
+}
+.settings-league-logo-blank { display: inline-block; width: 22px; height: 22px; flex-shrink: 0; }
+
 .scan-info {
   display: flex;
   align-items: center;

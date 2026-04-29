@@ -133,6 +133,127 @@ def kambi_listview(brand, league_term):
     except Exception:
         return []
 
+# ---------- League logo lookup (TheSportsDB free CDN, no API key needed) ----------
+
+_logo_cache_lock = threading.Lock()
+_logo_cache = {}  # versatile cache: 'term:<x>' / 'country:<x>' / 'id:<x>'
+
+# Kambi country prefix → TheSportsDB country name (their canonical spelling)
+_KAMBI_TO_TSDB_COUNTRY = {
+    "england": "England",       "spain": "Spain",          "italy": "Italy",
+    "germany": "Germany",       "france": "France",        "netherlands": "Netherlands",
+    "turkey": "Turkey",         "portugal": "Portugal",    "belgium": "Belgium",
+    "scotland": "Scotland",     "denmark": "Denmark",      "norway": "Norway",
+    "sweden": "Sweden",         "russia": "Russia",        "argentina": "Argentina",
+    "brazil": "Brazil",         "usa": "United States",    "mexico": "Mexico",
+    "japan": "Japan",           "south_korea": "South Korea", "australia": "Australia",
+    "austria": "Austria",       "switzerland": "Switzerland", "poland": "Poland",
+    "greece": "Greece",         "ukraine": "Ukraine",      "czech_republic": "Czech Republic",
+    "finland": "Finland",       "ireland": "Ireland",      "wales": "Wales",
+    "croatia": "Croatia",       "serbia": "Serbia",        "romania": "Romania",
+    "bulgaria": "Bulgaria",     "hungary": "Hungary",      "slovakia": "Slovakia",
+    "slovenia": "Slovenia",     "iceland": "Iceland",      "israel": "Israel",
+    "saudi_arabia": "Saudi Arabia", "uae": "United Arab Emirates",
+    "china": "China",           "india": "India",          "egypt": "Egypt",
+    "south_africa": "South Africa", "morocco": "Morocco",  "chile": "Chile",
+    "colombia": "Colombia",     "uruguay": "Uruguay",      "paraguay": "Paraguay",
+    "peru": "Peru",             "ecuador": "Ecuador",      "venezuela": "Venezuela",
+    "canada": "Canada",
+}
+
+# Direct league_term → TheSportsDB ID overrides. Used when TheSportsDB's
+# country-scoped search doesn't return the league (their catalog is
+# inconsistent for a few popular ones — e.g. Eredivisie isn't in their
+# Netherlands search results but is queryable by ID).
+_INTL_TSDB_IDS = {
+    "champions_league":          4480,
+    "europa_league":             4481,
+    "conference_league":         4838,
+    "netherlands/eredivisie":    4337,
+    "england/premier_league":    4328,
+    "germany/bundesliga":        4331,
+    "italy/serie_a":             4332,
+    "france/ligue_1":            4334,
+    "spain/la_liga":             4335,
+    "turkey/super_lig":          4339,
+    "turkey/1__lig":             4676,
+    "scotland/premiership":      4330,
+}
+
+def _tsdb_country_leagues(country):
+    """All soccer leagues for a country on TheSportsDB, cached forever (within process)."""
+    cache_key = f"country:{country}"
+    with _logo_cache_lock:
+        if cache_key in _logo_cache:
+            return _logo_cache[cache_key]
+    out = []
+    try:
+        url = (f"https://www.thesportsdb.com/api/v1/json/3/search_all_leagues.php"
+               f"?c={urllib.parse.quote(country)}&s=Soccer")
+        d = _http_get_json(url, timeout=10)
+        for L in (d.get("countries") or d.get("leagues") or []):
+            out.append({
+                "name":  (L.get("strLeague") or "").strip(),
+                "alt":   (L.get("strLeagueAlternate") or "").strip(),
+                "badge": L.get("strBadge"),
+            })
+    except Exception:
+        pass
+    with _logo_cache_lock:
+        _logo_cache[cache_key] = out
+    return out
+
+def _tsdb_lookup_id(league_id):
+    cache_key = f"id:{league_id}"
+    with _logo_cache_lock:
+        if cache_key in _logo_cache:
+            return _logo_cache[cache_key]
+    L = {}
+    try:
+        url = f"https://www.thesportsdb.com/api/v1/json/3/lookupleague.php?id={league_id}"
+        d = _http_get_json(url, timeout=8)
+        L = (d.get("leagues") or [{}])[0]
+    except Exception:
+        pass
+    with _logo_cache_lock:
+        _logo_cache[cache_key] = L
+    return L
+
+def league_logo_url(league_term):
+    """Resolve Kambi league_term → TheSportsDB badge URL. Cached. None if unknown."""
+    if not league_term:
+        return None
+    key = f"term:{league_term}"
+    with _logo_cache_lock:
+        if key in _logo_cache:
+            return _logo_cache[key]
+    badge = None
+    if league_term in _INTL_TSDB_IDS:
+        L = _tsdb_lookup_id(_INTL_TSDB_IDS[league_term])
+        badge = L.get("strBadge")
+    elif "/" in league_term:
+        country_code, league_short = league_term.split("/", 1)
+        country = _KAMBI_TO_TSDB_COUNTRY.get(country_code)
+        if country:
+            leagues = _tsdb_country_leagues(country)
+            normalized = league_short.lower().replace("_", " ").strip()
+            tokens = [t for t in normalized.split() if t]
+            best = (-1, None)
+            for L in leagues:
+                name_low = (L.get("name") or "").lower()
+                alt_low  = (L.get("alt") or "").lower()
+                score = sum(1 for t in tokens if t in name_low or t in alt_low)
+                if normalized and (normalized in name_low or normalized in alt_low):
+                    score += 10
+                if score > best[0]:
+                    best = (score, L.get("badge"))
+            if best[0] > 0:
+                badge = best[1]
+    with _logo_cache_lock:
+        _logo_cache[key] = badge
+    return badge
+
+
 def kambi_list_football_leagues(brand):
     """Walk Kambi's group tree and return every football league term.
     Output: list of {league_term, display_name, country} sorted by country

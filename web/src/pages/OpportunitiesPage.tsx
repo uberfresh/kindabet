@@ -108,7 +108,9 @@ function OpportunityRow({ rank, item }: { rank: number; item: BiggestDiff }) {
 
         <div className="opp-main">
           <div className="opp-meta">
-            {pillCls && <span className={`league-pill ${pillCls}`}>{pillText}</span>}
+            {item.logo_url
+              ? <img className="opp-league-logo" src={item.logo_url} alt="" loading="lazy" />
+              : pillCls && <span className={`league-pill ${pillCls}`}>{pillText}</span>}
             <span className="opp-when">
               <strong>{day}</strong> · {time}
             </span>
