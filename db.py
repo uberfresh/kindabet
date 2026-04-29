@@ -52,6 +52,12 @@ CREATE TABLE IF NOT EXISTS odds_snapshots (
 CREATE INDEX IF NOT EXISTS idx_os_match_time      ON odds_snapshots(match_id, taken_at);
 CREATE INDEX IF NOT EXISTS idx_os_match_op_time   ON odds_snapshots(match_id, operator, taken_at);
 CREATE INDEX IF NOT EXISTS idx_os_match_market    ON odds_snapshots(match_id, market_key);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 # Indexes that reference columns added by the migration. Created after the
@@ -106,13 +112,46 @@ def upsert_match(m):
         c.commit()
         return mid
 
-def list_matches(only_upcoming=True):
+def get_setting(key, default=None):
+    """Read a setting. Values are stored as JSON; default is returned on miss."""
+    import json as _json
     with _lock, conn() as c:
-        sql = "SELECT * FROM matches"
+        r = c.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        if not r:
+            return default
+        try:
+            return _json.loads(r["value"])
+        except _json.JSONDecodeError:
+            return default
+
+def set_setting(key, value):
+    """Write a setting. Value is JSON-encoded."""
+    import json as _json
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    with _lock, conn() as c:
+        c.execute(
+            "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            (key, _json.dumps(value, ensure_ascii=False), now))
+        c.commit()
+
+
+def list_matches(only_upcoming=True, league_terms=None):
+    """Filter by league_terms list when provided so disabled leagues drop
+    out of the live view (matches stay in DB; just hidden)."""
+    with _lock, conn() as c:
+        where = []
+        params = []
         if only_upcoming:
-            sql += " WHERE datetime(kickoff_utc) >= datetime('now', '-3 hours')"
+            where.append("datetime(kickoff_utc) >= datetime('now', '-3 hours')")
+        if league_terms:
+            where.append(f"league_term IN ({','.join('?' * len(league_terms))})")
+            params.extend(league_terms)
+        sql = "SELECT * FROM matches"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY competition, kickoff_utc"
-        rows = c.execute(sql).fetchall()
+        rows = c.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
 def get_match(match_id):

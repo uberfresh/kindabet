@@ -139,6 +139,9 @@ export function Topbar({ onJobComplete }: Props) {
         <NavLink to="/firsatlar" className={({ isActive }) => "topnav-link" + (isActive ? " active" : "")}>
           Fırsatlar
         </NavLink>
+        <NavLink to="/ayarlar" className={({ isActive }) => "topnav-link" + (isActive ? " active" : "")}>
+          Ayarlar
+        </NavLink>
       </nav>
 
       {(lastScan || nextScan) && !running && (

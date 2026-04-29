@@ -58,17 +58,32 @@ _refresh_all_job = {
 def _utc_now_str():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
+def _enabled_competitions():
+    """Resolve the list of competitions to scan from the settings table.
+    Falls back to the hardcoded defaults when no setting is stored."""
+    saved = db.get_setting("enabled_leagues")
+    if not saved or not isinstance(saved, list) or not saved:
+        return scrapers.COMPETITIONS
+    return [(item["display_name"], item["league_term"])
+            for item in saved
+            if isinstance(item, dict) and item.get("league_term")]
+
+
+def _enabled_league_terms():
+    return [t for _, t in _enabled_competitions()]
+
+
 def _bulk_refresh_worker():
     """Coordinator thread: discover matches first, then submit each to the
     pool and update progress as futures complete."""
     try:
-        for m in scrapers.discover_matches():
+        for m in scrapers.discover_matches(_enabled_competitions()):
             db.upsert_match(m)
     except Exception as e:
         with _refresh_all_lock:
             _refresh_all_job["error"] = f"discover failed: {e}"
 
-    matches = db.list_matches(only_upcoming=True)
+    matches = db.list_matches(only_upcoming=True, league_terms=_enabled_league_terms())
     with _refresh_all_lock:
         _refresh_all_job["total"] = len(matches)
         _refresh_all_job["completed"] = 0
@@ -133,9 +148,9 @@ def index():
 def api_matches():
     """Matches grouped by competition. ?sync=1 re-discovers from Kambi."""
     if request.args.get("sync") == "1":
-        for m in scrapers.discover_matches():
+        for m in scrapers.discover_matches(_enabled_competitions()):
             db.upsert_match(m)
-    matches = db.list_matches(only_upcoming=True)
+    matches = db.list_matches(only_upcoming=True, league_terms=_enabled_league_terms())
     headline = db.headline_odds(scrapers.REFERENCE_OPERATOR)  # {match_id: {sel: odd}}
     grouped = defaultdict(list)
     for m in matches:
@@ -404,6 +419,50 @@ def api_refresh(match_id):
                           ),
         "operator_status": db.operator_status(match_id),
     })
+
+
+# ---------- league settings ----------
+
+@app.route("/api/leagues/available")
+def api_leagues_available():
+    """Discover all football leagues Kambi exposes for our reference brand.
+    Falls back to Unibet if 711 returns nothing (rare)."""
+    leagues = scrapers.kambi_list_football_leagues(scrapers.KAMBI_BRANDS[scrapers.REFERENCE_OPERATOR])
+    if not leagues:
+        leagues = scrapers.kambi_list_football_leagues(scrapers.KAMBI_BRANDS[scrapers.FALLBACK_OPERATOR])
+    return jsonify({"leagues": leagues})
+
+
+@app.route("/api/settings/leagues")
+def api_settings_leagues_get():
+    saved = db.get_setting("enabled_leagues")
+    if not saved or not isinstance(saved, list) or not saved:
+        # No setting yet → return current defaults so the UI can pre-check them.
+        saved = [{"display_name": n, "league_term": t} for n, t in scrapers.COMPETITIONS]
+    return jsonify({"enabled": saved})
+
+
+@app.route("/api/settings/leagues", methods=["POST"])
+def api_settings_leagues_set():
+    """Persist the user's selected leagues. Body: {"enabled": [{display_name, league_term}, ...]}.
+    Accepts an empty list (clears all leagues — site shows "no matches")."""
+    body = request.get_json(silent=True) or {}
+    enabled = body.get("enabled")
+    if not isinstance(enabled, list):
+        return jsonify({"error": "enabled must be a list"}), 400
+    cleaned = []
+    seen_terms = set()
+    for item in enabled:
+        if not isinstance(item, dict):
+            continue
+        term = (item.get("league_term") or "").strip()
+        name = (item.get("display_name") or "").strip()
+        if not term or not name or term in seen_terms:
+            continue
+        seen_terms.add(term)
+        cleaned.append({"display_name": name, "league_term": term})
+    db.set_setting("enabled_leagues", cleaned)
+    return jsonify({"ok": True, "enabled": cleaned})
 
 
 # ---------- biggest cross-operator price differences ----------

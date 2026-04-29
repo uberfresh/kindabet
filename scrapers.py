@@ -133,7 +133,55 @@ def kambi_listview(brand, league_term):
     except Exception:
         return []
 
-def kambi_event_betoffers(brand, event_id):
+def kambi_list_football_leagues(brand):
+    """Walk Kambi's group tree and return every football league term.
+    Output: list of {league_term, display_name, country} sorted by country
+    then league name. International competitions (UCL, UEL, etc.) come back
+    with country=None."""
+    url = f"{KAMBI_BASE}/{brand}/group.json?lang=nl_NL&market=NL&depth=3"
+    try:
+        d = _http_get_json(url, timeout=15)
+    except Exception:
+        return []
+
+    out = []
+
+    def find_football(node):
+        if (node.get("termKey") or "").lower() == "football":
+            return node
+        for child in node.get("groups", []) or []:
+            hit = find_football(child)
+            if hit:
+                return hit
+        return None
+
+    football = find_football(d.get("group", {}))
+    if not football:
+        return out
+
+    for entry in football.get("groups", []) or []:
+        children = entry.get("groups", []) or []
+        if not children:
+            # International/cup competition (no country wrapper).
+            out.append({
+                "league_term":  entry.get("termKey"),
+                "display_name": entry.get("name"),
+                "country":      None,
+            })
+        else:
+            country_term = entry.get("termKey")
+            country_name = entry.get("name")
+            for league in children:
+                lterm = league.get("termKey")
+                if not lterm:
+                    continue
+                out.append({
+                    "league_term":  f"{country_term}/{lterm}",
+                    "display_name": league.get("name"),
+                    "country":      country_name,
+                })
+    out.sort(key=lambda x: (x["country"] or "", x["display_name"] or ""))
+    return out
     """All bet offers for a single event (every market, not just 1X2)."""
     url = f"{KAMBI_BASE}/{brand}/betoffer/event/{event_id}.json?lang=nl_NL&market=NL&includeParticipants=true"
     try:
@@ -747,12 +795,18 @@ COMPETITIONS = [
     ("1. Lig",                    "turkey/1__lig"),
 ]
 
-def discover_matches():
-    """List upcoming fixtures across all configured competitions.
-    Reference brand (711) first; if a league returns nothing, fall back to Unibet."""
+def discover_matches(competitions=None):
+    """List upcoming fixtures across the given competitions (or DEFAULT_COMPETITIONS
+    if None — for backwards compat). Reference brand (711) first; if a league
+    returns nothing, fall back to Unibet.
+
+    `competitions` is a list of (display_name, league_term) tuples — same shape
+    as the COMPETITIONS module-level constant."""
+    if competitions is None:
+        competitions = COMPETITIONS
     out = []
     seen_ids = set()
-    for comp_name, term in COMPETITIONS:
+    for comp_name, term in competitions:
         events = kambi_listview(KAMBI_BRANDS[REFERENCE_OPERATOR], term)
         if not events:
             events = kambi_listview(KAMBI_BRANDS[FALLBACK_OPERATOR], term)

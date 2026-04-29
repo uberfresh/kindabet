@@ -631,6 +631,235 @@ main {
 }
 
 /* ============================================================
+   Page-head row (title left, actions right)
+   ============================================================ */
+
+.page-head-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 16px;
+  flex-wrap: wrap;
+  justify-content: space-between;
+}
+
+.limit-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 4px;
+}
+
+.limit-picker select {
+  font: inherit;
+  font-weight: 600;
+  padding: 6px 28px 6px 12px;
+  background: var(--panel);
+  border: 1.5px solid var(--border);
+  border-radius: 8px;
+  color: var(--ink);
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%23c45728' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  transition: border-color 100ms;
+}
+.limit-picker select:focus,
+.limit-picker select:hover {
+  outline: none;
+  border-color: var(--orange);
+}
+
+/* ============================================================
+   Settings page
+   ============================================================ */
+
+.settings-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 18px;
+  margin-bottom: 18px;
+  position: sticky;
+  top: 64px;
+  z-index: 5;
+  box-shadow: 0 2px 8px rgba(20, 17, 13, 0.05);
+  flex-wrap: wrap;
+}
+
+.settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.settings-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 12px;
+}
+
+.settings-group {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.settings-group-head {
+  background: var(--cream-soft);
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-group-name {
+  font-weight: 700;
+  color: var(--black);
+  font-size: 14px;
+}
+
+.settings-leagues {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 0;
+}
+
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 13.5px;
+  transition: background 80ms;
+}
+.check-row:hover { background: var(--cream-soft); }
+
+.check-row input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--orange);
+  cursor: pointer;
+  margin: 0;
+  flex-shrink: 0;
+}
+
+.check-row.master {
+  font-size: 14px;
+  padding: 0;
+  cursor: pointer;
+}
+
+.settings-league-name {
+  flex: 1;
+  color: var(--ink);
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+.settings-skeleton {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 12px;
+}
+
+/* ============================================================
+   Refresh modal
+   ============================================================ */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(20, 17, 13, 0.55);
+  backdrop-filter: blur(4px);
+  display: grid;
+  place-items: center;
+  z-index: 100;
+  animation: fade-in 200ms ease;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.modal {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 28px 32px;
+  min-width: 380px;
+  max-width: 92vw;
+  box-shadow: 0 30px 80px rgba(20, 17, 13, 0.35);
+  animation: pop-in 220ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes pop-in {
+  from { transform: scale(0.92); opacity: 0; }
+  to   { transform: scale(1);    opacity: 1; }
+}
+
+.modal-head { margin-bottom: 18px; }
+.modal-title {
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--black);
+  letter-spacing: -0.2px;
+  margin-bottom: 4px;
+}
+.modal-sub { margin: 0; }
+
+.modal-progress {
+  height: 10px;
+  background: var(--cream-soft);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+
+.modal-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #d04a1d 0%, #e36c33 100%);
+  transition: width 400ms ease;
+  border-radius: 999px;
+}
+
+.modal-stats {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.modal-phase {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  color: var(--orange-dark);
+}
+
+.modal-error {
+  margin-top: 10px;
+  padding: 8px 10px;
+  background: var(--bad-bg);
+  color: var(--bad);
+  border-radius: 8px;
+}
+
+.bad { color: var(--bad); }
+
+/* ============================================================
    Opportunity cards (Fırsatlar)
    ============================================================ */
 

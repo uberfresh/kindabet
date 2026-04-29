@@ -148,3 +148,32 @@ export type BiggestDiffsResponse = {
 export function fetchBiggestDiffs(limit = 10): Promise<BiggestDiffsResponse> {
   return api<BiggestDiffsResponse>(`/api/biggest_diffs?limit=${limit}`);
 }
+
+// ---------- Settings: leagues ----------
+
+export type LeagueOption = {
+  league_term: string;
+  display_name: string;
+  country: string | null;
+};
+
+export type AvailableLeaguesResponse = { leagues: LeagueOption[] };
+
+export type EnabledLeague = { display_name: string; league_term: string };
+export type EnabledLeaguesResponse = { enabled: EnabledLeague[] };
+
+export function fetchAvailableLeagues(): Promise<AvailableLeaguesResponse> {
+  return api<AvailableLeaguesResponse>(`/api/leagues/available`);
+}
+
+export function fetchEnabledLeagues(): Promise<EnabledLeaguesResponse> {
+  return api<EnabledLeaguesResponse>(`/api/settings/leagues`);
+}
+
+export function saveEnabledLeagues(enabled: EnabledLeague[]): Promise<{ ok: boolean; enabled: EnabledLeague[] }> {
+  return api(`/api/settings/leagues`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+}

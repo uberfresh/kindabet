@@ -4,13 +4,26 @@ import { fetchBiggestDiffs, type BiggestDiffsResponse, type BiggestDiff } from "
 import { fmtKickoffSmart, fmtOdd, fmtRelative, leaguePillMeta } from "../format";
 import { Topbar } from "../components/Topbar";
 
+const LIMIT_KEY = "firsatlar_limit";
+const LIMIT_OPTIONS = [10, 20, 50, 100] as const;
+type Limit = (typeof LIMIT_OPTIONS)[number];
+
+function readSavedLimit(): Limit {
+  try {
+    const v = Number(localStorage.getItem(LIMIT_KEY));
+    if (LIMIT_OPTIONS.includes(v as Limit)) return v as Limit;
+  } catch {/* localStorage may be disabled */}
+  return 10;
+}
+
 export default function OpportunitiesPage() {
   const [data, setData] = useState<BiggestDiffsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [limit, setLimit] = useState<Limit>(readSavedLimit);
 
-  const load = async () => {
+  const load = async (l: Limit) => {
     try {
-      const d = await fetchBiggestDiffs(10);
+      const d = await fetchBiggestDiffs(l);
       setData(d);
       setError(null);
     } catch (e) {
@@ -19,18 +32,33 @@ export default function OpportunitiesPage() {
   };
 
   useEffect(() => {
-    load();
-  }, []);
+    load(limit);
+    try { localStorage.setItem(LIMIT_KEY, String(limit)); } catch {}
+  }, [limit]);
 
   return (
     <>
-      <Topbar onJobComplete={load} />
+      <Topbar onJobComplete={() => load(limit)} />
       <main>
-        <header className="page-head">
-          <h1 className="page-title">Fırsatlar</h1>
-          <p className="page-sub muted">
-            Operatörler arasındaki en büyük oran farkları — en yüksek fiyatı sunan kazanır.
-          </p>
+        <header className="page-head page-head-row">
+          <div>
+            <h1 className="page-title">Fırsatlar</h1>
+            <p className="page-sub muted">
+              Operatörler arasındaki en büyük oran farkları — en yüksek fiyatı sunan kazanır.
+            </p>
+          </div>
+          <label className="limit-picker">
+            <span className="muted small">Göster</span>
+            <select
+              value={limit}
+              onChange={(e) => setLimit(Number(e.target.value) as Limit)}
+              aria-label="Sonuç sayısı"
+            >
+              {LIMIT_OPTIONS.map((n) => (
+                <option key={n} value={n}>{n}</option>
+              ))}
+            </select>
+          </label>
         </header>
 
         {error && <div className="empty">Yükleme başarısız: {error}</div>}
@@ -52,7 +80,7 @@ export default function OpportunitiesPage() {
         {data && data.items.length > 0 && (
           <>
             <div className="muted small page-meta">
-              {data.total_evaluated.toLocaleString("tr-TR")} pazar değerlendirildi · ilk 10 fırsat
+              {data.total_evaluated.toLocaleString("tr-TR")} pazar değerlendirildi · ilk {limit} fırsat
               {data.computed_at && (
                 <> · son hesaplama <strong>{fmtRelative(data.computed_at)}</strong></>
               )}
