@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { fetchBiggestDiffs, type BiggestDiffsResponse, type BiggestDiff } from "../api";
-import { fmtKickoffSmart, fmtOdd, fmtRelative, leaguePillMeta } from "../format";
+import { fmtKickoffSmart, fmtOdd, fmtRelative, formatMarketLabel, leaguePillMeta } from "../format";
 import { Topbar } from "../components/Topbar";
 
 const LIMIT_KEY = "firsatlar_limit";
@@ -121,7 +121,13 @@ function OpportunityRow({ rank, item }: { rank: number; item: BiggestDiff }) {
             <strong>{item.away}</strong>
           </div>
           <div className="opp-market">
-            <span className="opp-market-label">{item.market_label}</span>
+            <span className="opp-market-label">
+              {formatMarketLabel({
+                market_label: item.market_label,
+                market_key: item.market_key,
+                line: item.line,
+              })}
+            </span>
             <span className="opp-sel-pill">{item.selection_label}</span>
           </div>
         </div>
