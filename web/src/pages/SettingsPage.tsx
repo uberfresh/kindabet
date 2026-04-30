@@ -1,12 +1,14 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   fetchAvailableLeagues,
   fetchEnabledLeagues,
+  getRefreshAllStatus,
   saveEnabledLeagues,
   startRefreshAll,
   type LeagueOption,
+  type RefreshAllStatus,
 } from "../api";
-import { sportEmoji } from "../format";
+import { fmtRelative, sportEmoji } from "../format";
 import { Topbar } from "../components/Topbar";
 import { RefreshModal } from "../components/RefreshModal";
 
@@ -23,6 +25,34 @@ const SPORT_PRIORITY = [
 const compositeKey = (sport_term: string, league_term: string) =>
   `${sport_term}:${league_term}`;
 
+// localStorage cache for the heavy /api/leagues/available payload (~50KB).
+// Refresh in the background on every mount so we still pick up new leagues
+// added upstream, but the user gets an instant render.
+const CACHE_KEY = "kinda_bet_available_leagues_v1";
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+function readCachedAvailable(): LeagueOption[] | null {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    if (!raw) return null;
+    const { cached_at, leagues } = JSON.parse(raw);
+    if (!Array.isArray(leagues)) return null;
+    if (Date.now() - new Date(cached_at).getTime() > CACHE_TTL_MS) return null;
+    return leagues;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedAvailable(leagues: LeagueOption[]) {
+  try {
+    localStorage.setItem(
+      CACHE_KEY,
+      JSON.stringify({ cached_at: new Date().toISOString(), leagues })
+    );
+  } catch { /* quota / private mode — silently ignore */ }
+}
+
 type CountryGroup = {
   country: string;
   leagues: LeagueOption[];
@@ -36,44 +66,89 @@ type SportGroup = {
 };
 
 export default function SettingsPage() {
-  const [available, setAvailable] = useState<LeagueOption[] | null>(null);
+  const [available, setAvailable] = useState<LeagueOption[] | null>(() => readCachedAvailable());
   const [selected, setSelected]   = useState<Set<string>>(new Set());  // composite keys
   const [error, setError]         = useState<string | null>(null);
   const [saving, setSaving]       = useState(false);
+  const [scanning, setScanning]   = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false);
   const [expanded, setExpanded]   = useState<Set<string>>(new Set());
   const [query, setQuery]         = useState("");
+  const [scanStatus, setScanStatus] = useState<RefreshAllStatus | null>(null);
+  const [, setTick] = useState(0);
+  const pollRef = useRef<number | null>(null);
 
-  // Load both lists on mount.
+  // Keep relative-time strings ("5 dk önce") fresh.
   useEffect(() => {
+    const t = setInterval(() => setTick((n) => n + 1), 30_000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Initial load: enabled leagues from server (always fresh — they're tiny);
+  // available leagues from cache if we have it (instant render), then
+  // refetch in the background so newly-discovered leagues get picked up.
+  useEffect(() => {
+    let cancelled = false;
     (async () => {
       try {
-        const [avail, enabled] = await Promise.all([
-          fetchAvailableLeagues(),
-          fetchEnabledLeagues(),
-        ]);
-        setAvailable(avail.leagues);
+        const enabled = await fetchEnabledLeagues();
+        if (cancelled) return;
         const enabledKeys = new Set(
           enabled.enabled.map((e) => compositeKey(e.sport_term || "football", e.league_term))
         );
         setSelected(enabledKeys);
-        // Auto-expand: football, plus any sport that has at least one selected league.
         const enabledSports = new Set<string>();
         for (const e of enabled.enabled) enabledSports.add(e.sport_term || "football");
         enabledSports.add("football");
         setExpanded(enabledSports);
       } catch (e) {
-        setError((e as Error).message);
+        if (!cancelled) setError((e as Error).message);
+      }
+
+      // Available leagues: refetch in background regardless of cache state.
+      // If cache miss, this is the first fetch and the user sees the skeleton
+      // until it lands. If cache hit, the UI already rendered — we're just
+      // refreshing data in place.
+      try {
+        const avail = await fetchAvailableLeagues();
+        if (cancelled) return;
+        setAvailable(avail.leagues);
+        writeCachedAvailable(avail.leagues);
+      } catch (e) {
+        if (!cancelled && !available) setError((e as Error).message);
       }
     })();
+
+    // Initial scan-status fetch.
+    getRefreshAllStatus().then((s) => { if (!cancelled) setScanStatus(s); }).catch(() => {});
+
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Poll status when a scan is running so the bottom bar info updates.
+  useEffect(() => {
+    if (!scanStatus?.running) {
+      if (pollRef.current != null) { clearInterval(pollRef.current); pollRef.current = null; }
+      return;
+    }
+    if (pollRef.current != null) return;
+    pollRef.current = window.setInterval(async () => {
+      try {
+        const s = await getRefreshAllStatus();
+        setScanStatus(s);
+      } catch {/* swallow */}
+    }, 2000);
+    return () => {
+      if (pollRef.current != null) { clearInterval(pollRef.current); pollRef.current = null; }
+    };
+  }, [scanStatus?.running]);
 
   // Group available leagues by sport, then by country within each sport.
   const sportGroups = useMemo<SportGroup[]>(() => {
     if (!available) return [];
 
-    // Two-level Map: sport_term -> country -> leagues[]
     const m = new Map<string, { name_tr: string; byCountry: Map<string, LeagueOption[]> }>();
     for (const lg of available) {
       const sportKey = lg.sport_term || "football";
@@ -87,7 +162,6 @@ export default function SettingsPage() {
       s.byCountry.get(country)!.push(lg);
     }
 
-    // Flatten into the SportGroup[] shape with sorted countries / leagues.
     const out: SportGroup[] = [];
     for (const [sport_term, s] of m) {
       const countries: CountryGroup[] = [];
@@ -95,7 +169,6 @@ export default function SettingsPage() {
         leagues.sort((a, b) => (a.display_name || "").localeCompare(b.display_name || "", "tr"));
         countries.push({ country, leagues });
       }
-      // International cups first, then alphabetical countries.
       countries.sort((a, b) => {
         if (a.country === "Uluslararası") return -1;
         if (b.country === "Uluslararası") return 1;
@@ -105,7 +178,6 @@ export default function SettingsPage() {
       out.push({ sport_term, sport_name_tr: s.name_tr, countries, totalLeagues });
     }
 
-    // Sort sports by priority, then alphabetically.
     return out.sort((a, b) => {
       const ap = SPORT_PRIORITY.indexOf(a.sport_term);
       const bp = SPORT_PRIORITY.indexOf(b.sport_term);
@@ -116,7 +188,6 @@ export default function SettingsPage() {
     });
   }, [available]);
 
-  // Filter by search query — match against league display_name, country, sport name.
   const filteredSportGroups = useMemo<SportGroup[]>(() => {
     if (!query.trim()) return sportGroups;
     const q = query.trim().toLocaleLowerCase("tr-TR");
@@ -186,7 +257,6 @@ export default function SettingsPage() {
     });
   };
 
-  // When the user types a query, auto-expand every group with matches.
   useEffect(() => {
     if (!query.trim()) return;
     setExpanded(new Set(filteredSportGroups.map((g) => g.sport_term)));
@@ -207,7 +277,6 @@ export default function SettingsPage() {
       await saveEnabledLeagues(toSave);
       setSavedFlash(true);
       window.setTimeout(() => setSavedFlash(false), 2500);
-      // Kick off a fresh sweep so newly enabled leagues populate immediately.
       await startRefreshAll();
       setModalOpen(true);
     } catch (e) {
@@ -217,20 +286,77 @@ export default function SettingsPage() {
     }
   };
 
+  const onScanAll = async () => {
+    setScanning(true);
+    try {
+      const s = await startRefreshAll();
+      setScanStatus(s);
+      setModalOpen(true);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setScanning(false);
+    }
+  };
+
   const totalSelected = selected.size;
   const totalAvailable = available?.length ?? 0;
   const allSelected = totalAvailable > 0 && totalSelected === totalAvailable;
   const someSelected = totalSelected > 0 && !allSelected;
 
+  const lastScan = scanStatus?.finished_at ? fmtRelative(scanStatus.finished_at) : "";
+  const nextScan = scanStatus?.next_scheduled_at ? fmtRelative(scanStatus.next_scheduled_at) : "";
+  const intervalH = Math.round((scanStatus?.auto_refresh_interval_seconds ?? 3600) / 3600);
+
   return (
     <>
-      <Topbar onJobComplete={() => {}} />
-      <main>
-        <header className="page-head">
-          <h1 className="page-title">Ayarlar</h1>
-          <p className="page-sub muted">
-            Taranacak sporları ve ligleri seç. Kaydettiğinde tüm maçlar yeniden taranır.
-          </p>
+      <Topbar onJobComplete={() => {
+        getRefreshAllStatus().then((s) => setScanStatus(s)).catch(() => {});
+      }} />
+      <main className="settings-page">
+        <header className="settings-header">
+          <div className="settings-title-row">
+            <h1 className="page-title">Ayarlar</h1>
+            <label className="settings-master">
+              <input
+                type="checkbox"
+                checked={allSelected}
+                ref={(el) => { if (el) el.indeterminate = someSelected; }}
+                onChange={toggleAll}
+                disabled={!available}
+              />
+              <span>Tümünü seç <span className="muted">({totalSelected} / {totalAvailable})</span></span>
+            </label>
+          </div>
+
+          <div className="scan-info-card">
+            <div className="scan-info-row">
+              <span className="scan-info-icon" aria-hidden="true">⏱</span>
+              <div className="scan-info-text">
+                <div className="scan-info-line">
+                  {scanStatus?.running ? (
+                    <>
+                      <span className="pulse" />
+                      <strong>Tarama sürüyor</strong> — {scanStatus.completed}/{scanStatus.total}
+                      {scanStatus.scope?.startsWith("sport:") && (
+                        <span className="muted small"> ({scanStatus.scope.slice(6)})</span>
+                      )}
+                    </>
+                  ) : lastScan ? (
+                    <>
+                      Son tarama: <strong>{lastScan}</strong>
+                      {nextScan && <> · Sonraki: <strong>{nextScan}</strong></>}
+                    </>
+                  ) : (
+                    <span className="muted">Henüz tarama yapılmadı.</span>
+                  )}
+                </div>
+                <div className="scan-info-sub muted small">
+                  Otomatik tarama her {intervalH} saatte bir çalışır. İstediğin zaman aşağıdan elle de tarayabilirsin.
+                </div>
+              </div>
+            </div>
+          </div>
         </header>
 
         {error && (
@@ -245,37 +371,6 @@ export default function SettingsPage() {
 
         {available && (
           <>
-            <div className="settings-toolbar">
-              <label className="check-row master">
-                <input
-                  type="checkbox"
-                  checked={allSelected}
-                  ref={(el) => { if (el) el.indeterminate = someSelected; }}
-                  onChange={toggleAll}
-                />
-                <span><strong>Tümünü seç</strong> ({totalSelected} / {totalAvailable})</span>
-              </label>
-              <input
-                className="settings-search"
-                type="search"
-                placeholder="Spor, ülke veya lig ara…"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                aria-label="Lig ara"
-              />
-              <div className="settings-actions">
-                {savedFlash && <span className="muted small">Kaydedildi ✓</span>}
-                <button
-                  className="btn"
-                  onClick={onSave}
-                  disabled={saving}
-                  title={"Kaydet ve yeni taramayı başlat"}
-                >
-                  {saving ? "Kaydediliyor…" : "Kaydet ve Tara"}
-                </button>
-              </div>
-            </div>
-
             {filteredSportGroups.length === 0 && query.trim() && (
               <div className="empty">"{query}" için lig bulunamadı.</div>
             )}
@@ -376,7 +471,44 @@ export default function SettingsPage() {
         )}
       </main>
 
-      <RefreshModal open={modalOpen} onClose={() => setModalOpen(false)} />
+      {/* Sticky bottom action bar — search + save + scan-all. Mobile-first
+          surface so the user can always trigger a scan or save without
+          scrolling back to the top. */}
+      <div className="settings-actionbar">
+        <input
+          className="settings-search"
+          type="search"
+          placeholder="Spor, ülke veya lig ara…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          aria-label="Lig ara"
+        />
+        <div className="settings-actionbar-buttons">
+          {savedFlash && <span className="muted small saved-flash">Kaydedildi ✓</span>}
+          <button
+            className="btn ghost"
+            onClick={onScanAll}
+            disabled={scanning || scanStatus?.running || !available}
+            title="Şu anda etkin olan tüm ligleri yeniden tara"
+          >
+            {scanning || scanStatus?.running ? "Taranıyor…" : "↻ Hepsini Tara"}
+          </button>
+          <button
+            className="btn"
+            onClick={onSave}
+            disabled={saving || !available}
+            title="Seçimi kaydet ve hemen taramaya başla"
+          >
+            {saving ? "Kaydediliyor…" : "Kaydet ve Tara"}
+          </button>
+        </div>
+      </div>
+
+      <RefreshModal open={modalOpen} onClose={() => {
+        setModalOpen(false);
+        // Refresh status display once the modal closes so "son tarama" updates.
+        getRefreshAllStatus().then((s) => setScanStatus(s)).catch(() => {});
+      }} />
     </>
   );
 }

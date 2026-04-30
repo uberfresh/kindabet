@@ -1189,18 +1189,22 @@ TONYBET_CATEGORIES = (101, 41, 111)
 #
 # `line_mode` values:
 #   False     — no line; emit market_key = root.
-#   "INFER"   — line not exposed in payload; emit a placeholder
-#               OVER_UNDER_FT@? row, then resolve the line at orchestration
-#               time by comparing Over prices against Kambi's per-line OU
-#               markets (see `_align_tonybet_inferred_lines`).
 #
-# Market 557 (Asian Handicap) is intentionally absent — Asian Handicap is
-# removed from the catalog system-wide.
+# Notably absent:
+#   - 868 (Total Goals OU): TonyBet's /api/event/list ships a single "main"
+#     OU line per event with specifiers=null. That main line is often the
+#     integer 2.0 (over≈1.36, under≈3.00) while Kambi only carries
+#     half-integer lines (1.5, 2.5, 3.5). Inferring TonyBet's line by
+#     matching against Kambi's nearest Over price was rounding 2.0 → 2.5
+#     and surfacing a 3.00 odd in the OU 2.5 row, while TonyBet's actual
+#     OU 2.5 (visible only on their SPA via WebSocket) was 4.10. Better
+#     to omit than to mislead — cross-operator OU comparison still works
+#     across 711, Unibet, and TOTO.
+#   - 557 (Asian Handicap): removed system-wide.
 TONYBET_MARKETS = {
-    621: ("MATCH_RESULT_FT",   False,    {1: "1", 2: "X", 3: "2"}),
-    589: ("BTTS_FT",           False,    {74: "YES", 76: "NO"}),
-    721: ("DOUBLE_CHANCE_FT",  False,    {436: "1X", 438: "12", 440: "X2"}),
-    868: ("OVER_UNDER_FT",     "INFER",  {4: "OVER", 5: "UNDER"}),
+    621: ("MATCH_RESULT_FT",   False, {1: "1", 2: "X", 3: "2"}),
+    589: ("BTTS_FT",           False, {74: "YES", 76: "NO"}),
+    721: ("DOUBLE_CHANCE_FT",  False, {436: "1X", 438: "12", 440: "X2"}),
 }
 
 # Cached per-category fetch — bulk-refresh hits the same API many times,
@@ -1296,11 +1300,7 @@ def fetch_tonybet(home, away, kickoff_utc_iso=None, **_):
             continue
         canonical_root, line_mode, sel_remap = mapping
         line_f = None
-        if line_mode == "INFER":
-            # Placeholder market_key — line resolved at orchestration time by
-            # cross-referencing Kambi's per-line OU.
-            market_key = f"{canonical_root}@?"
-        elif line_mode:
+        if line_mode:
             line_f = _tonybet_parse_line(m.get("specifiers"))
             market_key = (f"{canonical_root}@{line_f:g}"
                           if line_f is not None else canonical_root)
@@ -1424,55 +1424,6 @@ def discover_matches(competitions=None):
     out.sort(key=lambda m: (m["competition"], m["kickoff_utc_iso"] or ""))
     return out
 
-def _align_tonybet_inferred_lines(rows):
-    """Resolve TonyBet's `OVER_UNDER_FT@?` placeholders to a real line by
-    finding the Kambi (711 → Unibet fallback) per-line OU market whose Over
-    price is closest. If no Kambi reference is available the placeholders
-    are dropped — better than emitting them with a wrong/random line."""
-    placeholders = [r for r in rows
-                    if r.get("operator") == "TonyBet.nl"
-                    and r.get("market_key") == "OVER_UNDER_FT@?"]
-    if not placeholders:
-        return
-
-    tb_over = next((r["odd"] for r in placeholders
-                    if r.get("selection_key") == "OVER" and r.get("odd")), None)
-    if tb_over is None:
-        for r in placeholders:
-            rows.remove(r)
-        return
-
-    # Build {line: kambi_over_odd} from 711 first, then fall back to Unibet.
-    kambi_lines = {}
-    for ref_op in (REFERENCE_OPERATOR, FALLBACK_OPERATOR):
-        for r in rows:
-            if (r.get("operator") == ref_op
-                and r.get("selection_key") == "OVER"
-                and r.get("ok") and r.get("odd") is not None):
-                mk = r.get("market_key", "")
-                if not mk.startswith("OVER_UNDER_FT@"):
-                    continue
-                try:
-                    line = float(mk.split("@", 1)[1])
-                except ValueError:
-                    continue
-                kambi_lines[line] = r["odd"]
-        if kambi_lines:
-            break
-
-    if not kambi_lines:
-        for r in placeholders:
-            rows.remove(r)
-        return
-
-    best_line = min(kambi_lines.keys(),
-                    key=lambda L: abs(tb_over - kambi_lines[L]))
-    new_key = f"OVER_UNDER_FT@{best_line:g}"
-    for r in placeholders:
-        r["market_key"] = new_key
-        r["line"] = best_line
-
-
 def fetch_all_for_match(match):
     """Run every operator's fetcher for one match. Returns list of odds rows
     annotated with operator + license. For non-football matches we only run
@@ -1506,5 +1457,4 @@ def fetch_all_for_match(match):
             r["license"] = lic
             rows.append(r)
 
-    _align_tonybet_inferred_lines(rows)
     return rows

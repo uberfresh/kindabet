@@ -5,7 +5,6 @@ import {
   getRefreshAllStatus,
   type RefreshAllStatus,
 } from "../api";
-import { fmtRelative } from "../format";
 
 type Props = {
   onJobComplete: () => void;
@@ -14,16 +13,9 @@ type Props = {
 export function Topbar({ onJobComplete }: Props) {
   const [status, setStatus] = useState<RefreshAllStatus | null>(null);
   const [confirming, setConfirming] = useState(false);
-  const [, setTick] = useState(0);  // 30s tick to keep relative-time live
   const [menuOpen, setMenuOpen] = useState(false);
   const pollRef = useRef<number | null>(null);
   const location = useLocation();
-
-  // Re-render every 30s so "5 dk önce" → "6 dk önce" stays accurate.
-  useEffect(() => {
-    const t = setInterval(() => setTick((n) => n + 1), 30_000);
-    return () => clearInterval(t);
-  }, []);
 
   // Close mobile menu on route change.
   useEffect(() => { setMenuOpen(false); }, [location.pathname]);
@@ -144,10 +136,8 @@ export function Topbar({ onJobComplete }: Props) {
     );
   }
 
-  // "Son tarama" / "Sonraki tarama" — derived from job state. Only show when
-  // we have a finished_at, otherwise the data hasn't been seeded yet.
-  const lastScan = status?.finished_at ? fmtRelative(status.finished_at) : "";
-  const nextScan = status?.next_scheduled_at ? fmtRelative(status.next_scheduled_at) : "";
+  // Hourly scan timing (last/next) is shown on the Ayarlar page now,
+  // not in the topbar — keeps the navbar tight on mobile.
 
   const navLinks = (
     <>
@@ -171,14 +161,6 @@ export function Topbar({ onJobComplete }: Props) {
       </Link>
 
       <nav className="topnav topnav-desktop">{navLinks}</nav>
-
-      {(lastScan || nextScan) && !running && (
-        <div className="scan-info muted small">
-          {lastScan && <span>Son tarama: <strong>{lastScan}</strong></span>}
-          {lastScan && nextScan && <span className="scan-info-sep">·</span>}
-          {nextScan && <span>Sonraki: <strong>{nextScan}</strong></span>}
-        </div>
-      )}
 
       <div className="actions">
         <button
