@@ -18,7 +18,7 @@ Conventions
     * "DOUBLE_CHANCE_FT"   1X / 12 / X2
     * "BTTS_FT"            both teams to score
     * "OVER_UNDER_FT@2.5"  totals (line baked in)
-    * "ASIAN_HANDICAP_FT@-1.5"
+    * "HANDICAP_3WAY_FT@-1.5"  3-way handicap with line
     * "KAMBI_<criterionId>[@line]"  fallback for Kambi-native markets that
       didn't map to a canonical type — these still match between two Kambi
       brands (711 ↔ Unibet) but won't match TOTO.
@@ -384,13 +384,6 @@ def league_display_name(league_term, brand=None):
         if lg.get("league_term") == league_term:
             return lg.get("display_name") or league_term
     return league_term
-    """All bet offers for a single event (every market, not just 1X2)."""
-    url = f"{KAMBI_BASE}/{brand}/betoffer/event/{event_id}.json?lang=nl_NL&market=NL&includeParticipants=true"
-    try:
-        d = _http_get_json(url, timeout=15)
-        return d.get("betOffers", []) or []
-    except Exception:
-        return []
 
 # Kambi criterion.ids that we map to cross-operator canonical keys. Anything
 # not listed here gets a `KAMBI_<crit_id>` key — comparison still works across
@@ -413,10 +406,6 @@ KAMBI_CANONICAL_CRIT = {
     1001159711: "HANDICAP_FT",         # European 2-way handicap
     1001224081: "HANDICAP_3WAY_FT",    # 3-way handicap (1/X/2)
     1001568620: "HANDICAP_3WAY_1H",
-    1002275572: "ASIAN_HANDICAP_FT",
-    1002275573: "ASIAN_HANDICAP_1H",
-    1002244276: "ASIAN_TOTAL_FT",
-    1002558602: "ASIAN_TOTAL_1H",
     1001159967: "OVER_UNDER_HOME_FT",  # team-specific totals
     1001159633: "OVER_UNDER_AWAY_FT",
     1003194958: "OVER_UNDER_HOME_1H",
@@ -426,6 +415,29 @@ KAMBI_CANONICAL_CRIT = {
     1001159750: "FIRST_GOAL_FT",
     1005692199: "TO_QUALIFY",
 }
+
+# Markets we deliberately don't surface (cluttery and rarely worth comparing).
+# Identified by criterion.id where we know it, and by an englishLabel substring
+# match as a safety net for variants we haven't catalogued.
+KAMBI_BLOCKED_CRIT_IDS = {
+    1002275572,   # Asian Handicap (FT)
+    1002275573,   # Asian Handicap (1H)
+    1002244276,   # Asian Total (FT)
+    1002558602,   # Asian Total (1H)
+}
+KAMBI_BLOCKED_LABEL_FRAGMENTS = (
+    "asian handicap",
+    "asian total",
+    "asian over",
+    "correct score",
+)
+
+def _kambi_offer_blocked(offer):
+    crit = offer.get("criterion") or {}
+    if crit.get("id") in KAMBI_BLOCKED_CRIT_IDS:
+        return True
+    label = (crit.get("englishLabel") or crit.get("label") or "").lower()
+    return any(frag in label for frag in KAMBI_BLOCKED_LABEL_FRAGMENTS)
 
 def _kambi_offer_line(offer):
     """Kambi puts the handicap/total line on each outcome (in milliunits).
@@ -463,10 +475,6 @@ MARKET_LABELS_TR = {
     "HANDICAP_FT":         "Handikap",
     "HANDICAP_3WAY_FT":    "Üçlü Handikap",
     "HANDICAP_3WAY_1H":    "Üçlü Handikap (İlk Yarı)",
-    "ASIAN_HANDICAP_FT":   "Asya Handikap",
-    "ASIAN_HANDICAP_1H":   "Asya Handikap (İlk Yarı)",
-    "ASIAN_TOTAL_FT":      "Asya Alt / Üst",
-    "ASIAN_TOTAL_1H":      "Asya Alt / Üst (İlk Yarı)",
     "FIRST_GOAL_FT":       "İlk Gol",
     "TO_QUALIFY":          "Tur Atlama",
 }
@@ -527,6 +535,8 @@ def _kambi_canonical_selection(outcome):
 def _kambi_parse_betoffers(offers):
     rows = []
     for offer in offers:
+        if _kambi_offer_blocked(offer):
+            continue
         market_key, market_label, line_f = _kambi_canonical_market(offer)
         crit_id = (offer.get("criterion") or {}).get("id")
         for o in offer.get("outcomes", []) or []:
@@ -660,8 +670,6 @@ TOTO_GROUP_TO_CANONICAL = {
     "NO_BET_DRAW":                           ("DNB_FT",               False),
     "NO_BET_DRAW_1ST_HALF":                  ("DNB_1H",               False),
     "NO_BET_DRAW_2ND_HALF":                  ("DNB_2H",               False),
-    "ASIAN_HANDICAP":                        ("ASIAN_HANDICAP_FT",    True),
-    "ASIAN_HANDICAP_1ST_HALF":               ("ASIAN_HANDICAP_1H",    True),
     "HANDICAP":                              ("HANDICAP_3WAY_FT",     True),
     "HANDICAP_1ST_HALF":                     ("HANDICAP_3WAY_1H",     True),
     "HANDICAP_2ND_HALF":                     ("HANDICAP_3WAY_2H",     True),
@@ -692,6 +700,16 @@ _TOTO_OU_ROOTS    = {"OVER_UNDER_FT", "OVER_UNDER_1H", "OVER_UNDER_2H",
 _TOTO_BTTS_ROOTS  = {"BTTS_FT", "BTTS_1H", "BTTS_2H"}
 _TOTO_DC_ROOTS    = {"DOUBLE_CHANCE_FT", "DOUBLE_CHANCE_1H"}
 _TOTO_DNB_ROOTS   = {"DNB_FT", "DNB_1H", "DNB_2H"}
+
+# Substring matches against `groupCode`. Anything we don't want to surface
+# (Asian variants, correct score grids, weird specials) is skipped before
+# canonicalization so it never reaches the DB.
+TOTO_BLOCKED_GROUP_FRAGMENTS = (
+    "ASIAN_HANDICAP",
+    "ASIAN_TOTAL",
+    "ASIAN_OVER_UNDER",
+    "CORRECT_SCORE",
+)
 
 def _toto_canonical_market(market):
     """Return (market_key, market_label, selection_remap or None, line_or_None)."""
@@ -754,6 +772,9 @@ def fetch_toto(home, away, kickoff_utc_iso=None, **_):
         for m in markets:
             if m.get("status") and m["status"] != "ACTIVE":
                 continue
+            gc_up = (m.get("groupCode") or "").upper()
+            if any(frag in gc_up for frag in TOTO_BLOCKED_GROUP_FRAGMENTS):
+                continue
             mk, mlabel, sel_remap, line_f = _toto_canonical_market(m)
             for o in m.get("outcomes", []) or []:
                 if not o.get("active", True) or not o.get("displayed", True):
@@ -815,19 +836,16 @@ TONYBET_CATEGORIES = (101, 41, 111)
 
 # market.id → (canonical_root, has_line, outcome_id → selection_key)
 #
-# Note on OU: market 868 (Total Goals Over/Under) is intentionally NOT mapped.
-# TonyBet's API returns OU outcomes with NO line specifier — `specifiers`,
-# `extendedSpecifiers`, and `marketMetadata` are all null. Without the line
-# we can't safely align with Kambi's per-line OU markets (which exist at
-# 0.5/1.5/2.5/3.5/4.5/5.5). Defaulting to 2.5 was wrong: a Hatayspor match's
-# main line might be 3.5 (small Turkish league) while a Brighton-Wolves
-# match's might be 1.5 (high-scoring), and we'd be comparing apples to
-# oranges. Asian Handicap (557) is fine because it carries `hcp=X` in
-# specifiers, so we know the line for those.
+# Markets we deliberately skip:
+#   * 868 (Total Goals OU) — TonyBet's API returns OU outcomes with NO line
+#     specifier, so we can't align with Kambi's per-line OU markets. Defaulting
+#     to 2.5 mis-compares Hatayspor (main line ~3.5) against Brighton (~1.5).
+#   * 557 (Asian Handicap) — product decision: Asian Handicap is removed from
+#     the catalog system-wide because it clutters the comparison without
+#     adding signal versus the European 2-/3-way handicap.
 TONYBET_MARKETS = {
     621: ("MATCH_RESULT_FT",   False, {1: "1", 2: "X", 3: "2"}),
     589: ("BTTS_FT",           False, {74: "YES", 76: "NO"}),
-    557: ("ASIAN_HANDICAP_FT", True,  {1714: "_HOME", 1715: "_AWAY"}),
     721: ("DOUBLE_CHANCE_FT",  False, {436: "1X", 438: "12", 440: "X2"}),
 }
 
@@ -945,14 +963,7 @@ def fetch_tonybet(home, away, kickoff_utc_iso=None, **_):
             sk = sel_remap.get(o.get("id")) if sel_remap else None
             if not sk:
                 continue
-            # Asian Handicap selections are team names — use the names from
-            # our Kambi match input so they line up cross-operator.
-            if sk == "_HOME":
-                sk, sl = home, home
-            elif sk == "_AWAY":
-                sk, sl = away, away
-            else:
-                sl = SELECTION_LABELS_TR.get(sk, sk)
+            sl = SELECTION_LABELS_TR.get(sk, sk)
             rows.append({
                 "market_key":      market_key,
                 "market_label":    market_label,

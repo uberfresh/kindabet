@@ -239,6 +239,20 @@ def _selection_sort_key(market_key, selection_key):
         return (len(order), selection_key)
 
 
+# Markets we never surface, even if they're still active in the DB from
+# pre-blocklist refreshes. Substring match against the canonical or fallback
+# market_key (case-insensitive) so it covers ASIAN_HANDICAP_FT@-1.5,
+# TOTO_ASIAN_HANDICAP@…, KAMBI_<id>@… for blocked criteria, etc.
+_BLOCKED_MARKET_FRAGMENTS = ("ASIAN_HANDICAP", "ASIAN_TOTAL",
+                             "ASIAN_OVER_UNDER", "CORRECT_SCORE")
+
+def _market_is_blocked(market_key):
+    if not market_key:
+        return False
+    up = market_key.upper()
+    return any(frag in up for frag in _BLOCKED_MARKET_FRAGMENTS)
+
+
 def _localize_market_label(market_key, stored_label):
     """Re-derive the Turkish label from the canonical market_key. Falls back
     to the stored label for non-canonical KAMBI_<id> markets. This keeps the
@@ -259,6 +273,8 @@ def _build_market_view(rows, reference_operator, all_operators=None):
     instead of a meaningless dash."""
     if all_operators is None:
         all_operators = []
+
+    rows = [r for r in rows if not _market_is_blocked(r.get("market_key"))]
 
     # Per-operator state, derived in one pass:
     #   op_with_data[op]    — at least one ok=1 odd for this match
@@ -516,6 +532,14 @@ def api_settings_leagues_set():
         name = by_term.get(term) or (item.get("display_name") or "").strip() or term
         cleaned.append({"display_name": name, "league_term": term})
     db.set_setting("enabled_leagues", cleaned)
+    # Removed leagues should drop out of /firsatlar instantly — recompute the
+    # diffs cache against the new enabled-leagues filter (cheap; ~latest_odds
+    # join). The next bulk refresh will recompute again, but waiting for it
+    # would leave stale entries on the page for up to an hour.
+    try:
+        _refresh_biggest_diffs_cache()
+    except Exception as e:
+        print(f"[settings] diff cache rebuild failed: {e}", flush=True)
     return jsonify({"ok": True, "enabled": cleaned})
 
 
@@ -533,12 +557,22 @@ _biggest_diffs_cache = {
 
 def _compute_biggest_diffs():
     """Heavy pass: scan latest_odds, group, compute per-tuple spreads, sort.
-    Returns (sorted_list, total_groups_evaluated)."""
+    Returns (sorted_list, total_groups_evaluated).
+
+    Filters: only rows belonging to currently-enabled leagues (so removing a
+    league in Settings drops its matches from /firsatlar immediately) and
+    only canonical markets (KAMBI_/TOTO_-native fallbacks can't align
+    cross-operator)."""
+    enabled_terms = set(_enabled_league_terms())
     rows = db.all_latest_odds()
     groups = defaultdict(list)
     for r in rows:
+        if enabled_terms and r.get("league_term") not in enabled_terms:
+            continue
         mk = r["market_key"]
         if mk.startswith("KAMBI_") or mk.startswith("TOTO_"):
+            continue
+        if _market_is_blocked(mk):
             continue
         groups[(r["match_id"], mk, r["selection_key"])].append(r)
 
