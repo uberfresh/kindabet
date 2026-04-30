@@ -84,9 +84,21 @@ def _enabled_competitions():
         term = item.get("league_term")
         if not term:
             continue
+        # Default truly-legacy entries (pre-multi-sport — no sport_term ever
+        # written) to football. Don't fall through to by_term lookup: when a
+        # league_term is shared across sports (champions_league exists in
+        # football + handball + volleyball), by_term last-write-wins would
+        # silently misroute legacy football entries to volleyball.
+        sport = (item.get("sport_term") or "football").lower()
+        # Prefer the freshly-walked display name for the (sport, term) pair —
+        # but fall back to whatever's stored if the live taxonomy is offline.
         meta = by_term.get(term) or {}
-        name = meta.get("display_name") or item.get("display_name") or term
-        sport = (item.get("sport_term") or meta.get("sport_term") or "football").lower()
+        # Only apply the meta name if it's actually for the same sport
+        # (avoids handing back a volleyball league name for football UCL).
+        if meta.get("sport_term") == sport:
+            name = meta.get("display_name") or item.get("display_name") or term
+        else:
+            name = item.get("display_name") or term
         out.append({
             "sport_term":   sport,
             "display_name": name,
@@ -97,6 +109,13 @@ def _enabled_competitions():
 
 def _enabled_league_terms():
     return [c["league_term"] for c in _enabled_competitions()]
+
+
+def _enabled_sport_league_pairs():
+    """Composite (sport_term, league_term) tuples for the currently-enabled
+    leagues — needed because the same league_term may exist under multiple
+    sports (Champions League exists for both football and handball)."""
+    return [(c["sport_term"], c["league_term"]) for c in _enabled_competitions()]
 
 
 def _scrape_discovery():
@@ -134,7 +153,7 @@ def _refresh_sweep_worker(sport=None, discover=True, scope_label=None):
 
     matches = db.list_matches(
         only_upcoming=True,
-        league_terms=_enabled_league_terms(),
+        sport_league_pairs=_enabled_sport_league_pairs(),
         sport=sport,
     )
     with _refresh_all_lock:
@@ -210,7 +229,7 @@ def api_matches():
     if request.args.get("sync") == "1":
         for m in scrapers.discover_matches(_enabled_competitions()):
             db.upsert_match(m)
-    matches    = db.list_matches(only_upcoming=True, league_terms=_enabled_league_terms())
+    matches    = db.list_matches(only_upcoming=True, sport_league_pairs=_enabled_sport_league_pairs())
     hl_1x2     = db.headline_odds(scrapers.REFERENCE_OPERATOR, "MATCH_RESULT_FT")
     hl_ou25    = db.headline_odds(scrapers.REFERENCE_OPERATOR, "OVER_UNDER_FT@2.5")
     mkt_counts = db.market_counts(scrapers.REFERENCE_OPERATOR)
@@ -597,23 +616,25 @@ def api_settings_leagues_get():
     if not saved or not isinstance(saved, list) or not saved:
         saved = [{"sport_term": c["sport_term"], "display_name": c["display_name"],
                   "league_term": c["league_term"]} for c in scrapers.COMPETITIONS]
-    # Always re-resolve display_names + sport_term from current taxonomy so
-    # the UI shows the latest names regardless of when the setting was first
-    # written. Legacy entries lack sport_term — we backfill from the lookup.
+    # Re-resolve display_names from current taxonomy. Lookup is keyed by
+    # (sport_term, league_term) — keying only on league_term collides for
+    # leagues that exist under multiple sports (champions_league appears
+    # in football, handball, AND volleyball).
     try:
         all_leagues = scrapers.kambi_list_all_sports(
             scrapers.KAMBI_BRANDS[scrapers.REFERENCE_OPERATOR])
-        by_term = {lg["league_term"]: lg for lg in all_leagues}
+        by_pair = {(lg["sport_term"], lg["league_term"]): lg for lg in all_leagues}
     except Exception:
-        by_term = {}
+        by_pair = {}
     enriched = []
     for item in saved:
         term = (item or {}).get("league_term")
         if not term:
             continue
-        meta = by_term.get(term) or {}
+        sport = (item.get("sport_term") or "football").lower()
+        meta = by_pair.get((sport, term)) or {}
         enriched.append({
-            "sport_term":    (item.get("sport_term") or meta.get("sport_term") or "football").lower(),
+            "sport_term":    sport,
             "league_term":   term,
             "display_name":  meta.get("display_name") or item.get("display_name") or term,
         })
@@ -623,30 +644,33 @@ def api_settings_leagues_get():
 @app.route("/api/settings/leagues", methods=["POST"])
 def api_settings_leagues_set():
     """Persist the user's selected leagues. Body: {"enabled": [{sport_term, display_name, league_term}, ...]}.
-    Accepts an empty list (clears all leagues — site shows "no matches")."""
+    Accepts an empty list (clears all leagues — site shows "no matches"). The
+    same league_term may legitimately appear under multiple sports, so dedup
+    is on the (sport, term) pair, not term alone."""
     body = request.get_json(silent=True) or {}
     enabled = body.get("enabled")
     if not isinstance(enabled, list):
         return jsonify({"error": "enabled must be a list"}), 400
-    # Re-resolve display_names + sport_term from current Kambi data on save,
-    # so even if the client sent a stale name, what we store is canonical.
     try:
         all_leagues = scrapers.kambi_list_all_sports(
             scrapers.KAMBI_BRANDS[scrapers.REFERENCE_OPERATOR])
-        by_term = {lg["league_term"]: lg for lg in all_leagues}
+        by_pair = {(lg["sport_term"], lg["league_term"]): lg for lg in all_leagues}
     except Exception:
-        by_term = {}
+        by_pair = {}
     cleaned = []
-    seen_terms = set()
+    seen_pairs = set()
     for item in enabled:
         if not isinstance(item, dict):
             continue
         term = (item.get("league_term") or "").strip()
-        if not term or term in seen_terms:
+        if not term:
             continue
-        seen_terms.add(term)
-        meta = by_term.get(term) or {}
-        sport = (item.get("sport_term") or meta.get("sport_term") or "football").lower()
+        sport = (item.get("sport_term") or "football").lower()
+        pair = (sport, term)
+        if pair in seen_pairs:
+            continue
+        seen_pairs.add(pair)
+        meta = by_pair.get(pair) or {}
         name = meta.get("display_name") or (item.get("display_name") or "").strip() or term
         cleaned.append({"sport_term": sport, "display_name": name, "league_term": term})
     db.set_setting("enabled_leagues", cleaned)
@@ -681,12 +705,14 @@ def _compute_biggest_diffs():
     league in Settings drops its matches from /firsatlar immediately) and
     only canonical markets (KAMBI_/TOTO_-native fallbacks can't align
     cross-operator)."""
-    enabled_terms = set(_enabled_league_terms())
+    enabled_pairs = set(_enabled_sport_league_pairs())
     rows = db.all_latest_odds()
     groups = defaultdict(list)
     for r in rows:
-        if enabled_terms and r.get("league_term") not in enabled_terms:
-            continue
+        if enabled_pairs:
+            pair = ((r.get("sport") or "football"), r.get("league_term") or "")
+            if pair not in enabled_pairs:
+                continue
         mk = r["market_key"]
         if mk.startswith("KAMBI_") or mk.startswith("TOTO_"):
             continue

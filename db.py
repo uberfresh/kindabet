@@ -148,16 +148,26 @@ def set_setting(key, value):
         c.commit()
 
 
-def list_matches(only_upcoming=True, league_terms=None, sport=None):
-    """Filter by league_terms list when provided so disabled leagues drop
-    out of the live view (matches stay in DB; just hidden). Optional sport
-    filter restricts to one sport_term (e.g. 'football')."""
+def list_matches(only_upcoming=True, league_terms=None, sport=None, sport_league_pairs=None):
+    """Filter by enabled (sport, league_term) pairs OR by a flat league_terms
+    list (legacy single-sport call) so disabled leagues drop out of the live
+    view. Same league_term may appear under multiple sports (e.g. 'Champions
+    League' exists for both football and handball) — only the composite filter
+    disambiguates. Optional `sport` further restricts to one sport_term."""
     with _lock, conn() as c:
         where = []
         params = []
         if only_upcoming:
             where.append("datetime(kickoff_utc) >= datetime('now', '-3 hours')")
-        if league_terms:
+        if sport_league_pairs:
+            # Composite filter: build (sport, league_term) IN clause as OR'd
+            # equality pairs since SQLite's row-value IN doesn't bind cleanly.
+            clauses = []
+            for s, lt in sport_league_pairs:
+                clauses.append("(sport = ? AND league_term = ?)")
+                params.extend([s, lt])
+            where.append("(" + " OR ".join(clauses) + ")")
+        elif league_terms:
             where.append(f"league_term IN ({','.join('?' * len(league_terms))})")
             params.extend(league_terms)
         if sport:
@@ -367,13 +377,16 @@ def all_latest_odds():
 
     Returns rows where is_active=1, which means they were emitted by their
     operator's most recent refresh. Stale rows from past refreshes are
-    automatically excluded."""
+    automatically excluded. The sport tag is included so callers can filter
+    by composite (sport, league_term) pairs (necessary because the same
+    league_term may exist under multiple sports — e.g. champions_league)."""
     with _lock, conn() as c:
         rows = c.execute("""
             SELECT s.match_id, s.operator, s.market_key, s.market_label,
                    s.selection_key, s.selection_label, s.line, s.odd, s.taken_at,
                    s.last_seen_at,
-                   m.home, m.away, m.competition, m.kickoff_utc, m.league_term
+                   m.home, m.away, m.competition, m.kickoff_utc,
+                   m.league_term, m.sport
             FROM odds_snapshots s
             JOIN matches m ON m.id = s.match_id
             WHERE s.is_active = 1

@@ -129,3 +129,56 @@ export function leagueLogoPath(name: string): string | null {
   if (!cls) return null;
   return `/leagues/${cls}.svg`;
 }
+
+// Unicode sport emoji per Kambi sport_term. Renders as a colorful glyph in
+// every modern OS — zero bundle cost, no asset pipeline. Fallback "🏆" so an
+// unknown sport_term still gets *something* visual.
+const SPORT_EMOJI: Record<string, string> = {
+  football:           "⚽",
+  basketball:         "🏀",
+  tennis:             "🎾",
+  ice_hockey:         "🏒",
+  icehockey:          "🏒",
+  volleyball:         "🏐",
+  beach_volleyball:   "🏐",
+  handball:           "🤾",
+  ufc_mma:            "🥋",
+  mma:                "🥋",
+  boxing:             "🥊",
+  american_football:  "🏈",
+  baseball:           "⚾",
+  rugby_union:        "🏉",
+  rugby_league:       "🏉",
+  rugby:              "🏉",
+  australian_rules:   "🏉",
+  cricket:            "🏏",
+  golf:               "⛳",
+  snooker:            "🎱",
+  darts:              "🎯",
+  cycling:            "🚴",
+  formula_1:          "🏎️",
+  motorsports:        "🏎️",
+  table_tennis:       "🏓",
+  badminton:          "🏸",
+  surfing:            "🏄",
+  skiing:             "⛷️",
+  winter_sports:      "⛷️",
+  chess:              "♟️",
+  horse_racing:       "🐎",
+  greyhounds:         "🐕",
+  swimming:           "🏊",
+  athletics:          "🏃",
+  floorball:          "🏑",
+  futsal:             "⚽",
+  beach_soccer:       "🏖️",
+  netball:            "🥅",
+  pesapallo:          "⚾",
+  lacrosse:           "🥍",
+  esports:            "🎮",
+  water_polo:         "🤽",
+};
+
+export function sportEmoji(sport_term: string | null | undefined): string {
+  if (!sport_term) return "🏆";
+  return SPORT_EMOJI[sport_term.toLowerCase()] || "🏆";
+}

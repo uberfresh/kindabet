@@ -907,6 +907,15 @@ main {
   transition: transform 120ms;
 }
 
+.settings-sport-icon {
+  font-size: 22px;
+  line-height: 1;
+  width: 28px;
+  text-align: center;
+  filter: drop-shadow(0 1px 1px rgba(20,17,13,0.10));
+  user-select: none;
+}
+
 .settings-sport-name {
   font-weight: 700;
   font-size: 15px;
@@ -942,6 +951,50 @@ main {
 }
 .settings-sport-leagues .check-row { padding: 7px 12px; border-radius: 6px; }
 .settings-sport-leagues .check-row:hover { background: var(--cream-soft); }
+
+/* Country sub-groups inside a sport. The country header is the master
+   checkbox for that country's leagues; the league grid sits below it. */
+.settings-sport-body {
+  padding: 4px 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-country + .settings-country {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.settings-country-head {
+  position: sticky;
+  /* The settings-toolbar plus the sport-head together leave ~118px room. */
+  padding: 4px 4px 4px 6px;
+  background: linear-gradient(to bottom, var(--panel) 70%, rgba(255,255,255,0.0));
+}
+
+.settings-country-head .check-row.tight {
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--cream-soft);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.settings-country-name {
+  flex: 1;
+  color: var(--black);
+}
+
+.settings-country-leagues {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  padding: 4px 8px 6px 22px;
+  gap: 0;
+}
+.settings-country-leagues .check-row { padding: 6px 10px; border-radius: 6px; }
+.settings-country-leagues .check-row:hover { background: var(--cream-soft); }
 
 .check-row {
   display: flex;
