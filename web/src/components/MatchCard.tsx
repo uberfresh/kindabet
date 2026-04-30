@@ -24,6 +24,7 @@ export function MatchCard({ match, showLeaguePill = false }: Props) {
   const odds = match.headline_odds;
   const ou = match.over_under_2_5;
   const count = match.market_count ?? 0;
+  const isFootball = !match.sport || match.sport === "football";
   const hasAnyOdd = !!(odds && (odds["1"] || odds.X || odds["2"]));
 
   return (
@@ -36,6 +37,9 @@ export function MatchCard({ match, showLeaguePill = false }: Props) {
             ? <img className="match-row-logo" src={logo} alt="" loading="lazy" />
             : pillCls && <span className={`league-pill ${pillCls}`}>{pillText}</span>
           )}
+          {!isFootball && match.sport_name_tr && (
+            <span className="sport-pill" title={match.sport}>{match.sport_name_tr}</span>
+          )}
         </div>
 
         <div className="match-row-teams">
@@ -43,24 +47,30 @@ export function MatchCard({ match, showLeaguePill = false }: Props) {
           <span className="match-row-team away">{match.away}</span>
         </div>
 
-        <div className="match-row-markets">
-          <div className="market-block">
-            <span className="market-block-head muted small">Maç Sonucu</span>
-            <div className="market-block-buttons cols-3">
-              <OddBtn label="1" value={odds?.["1"]} />
-              <OddBtn label="X" value={odds?.X} />
-              <OddBtn label="2" value={odds?.["2"]} />
+        {isFootball ? (
+          <div className="match-row-markets">
+            <div className="market-block">
+              <span className="market-block-head muted small">Maç Sonucu</span>
+              <div className="market-block-buttons cols-3">
+                <OddBtn label="1" value={odds?.["1"]} />
+                <OddBtn label="X" value={odds?.X} />
+                <OddBtn label="2" value={odds?.["2"]} />
+              </div>
             </div>
-          </div>
 
-          <div className="market-block">
-            <span className="market-block-head muted small">Alt / Üst 2.5</span>
-            <div className="market-block-buttons cols-2">
-              <OddBtn label="Üst" value={ou?.OVER} />
-              <OddBtn label="Alt" value={ou?.UNDER} />
+            <div className="market-block">
+              <span className="market-block-head muted small">Alt / Üst 2.5</span>
+              <div className="market-block-buttons cols-2">
+                <OddBtn label="Üst" value={ou?.OVER} />
+                <OddBtn label="Alt" value={ou?.UNDER} />
+              </div>
             </div>
           </div>
-        </div>
+        ) : (
+          <div className="match-row-markets non-football">
+            <span className="muted small">Detay için tıkla — {count} market mevcut</span>
+          </div>
+        )}
 
         <span
           className={"match-row-count" + (count > 0 ? "" : " empty")}
@@ -69,7 +79,7 @@ export function MatchCard({ match, showLeaguePill = false }: Props) {
           {count > 0 ? `+${count}` : "—"}
         </span>
 
-        {!hasAnyOdd && (
+        {isFootball && !hasAnyOdd && (
           <span className="match-row-cold-strip">henüz oran yok</span>
         )}
       </article>

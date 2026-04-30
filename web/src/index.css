@@ -264,6 +264,21 @@ main {
 .league-pill.sl  { background: linear-gradient(135deg, #991b1b, #dc2626); }
 .league-pill.tff { background: linear-gradient(135deg, #0e7490, #0891b2); }
 
+/* Sport pill — shown on non-football match cards so the user can tell at a
+   glance what sport they're looking at. Lower-key than the league-pill since
+   it's secondary metadata. */
+.sport-pill {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 9px;
+  border-radius: 999px;
+  letter-spacing: 0.2px;
+  color: var(--orange-dark);
+  background: var(--orange-soft);
+  border: 1px solid rgba(227, 108, 51, 0.35);
+  white-space: nowrap;
+}
+
 .league-logo {
   width: 32px;
   height: 32px;
@@ -744,6 +759,120 @@ main {
   padding: 4px 0;
 }
 
+/* ---- Multi-sport collapsible groups (replaces the old country-only design) ---- */
+
+.settings-search {
+  flex: 1;
+  min-width: 180px;
+  max-width: 320px;
+  padding: 9px 14px;
+  font: inherit;
+  font-size: 13.5px;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--ink);
+  transition: border-color 100ms, box-shadow 100ms;
+}
+.settings-search:focus {
+  outline: none;
+  border-color: var(--orange);
+  box-shadow: 0 0 0 3px rgba(227, 108, 51, 0.18);
+}
+.settings-search::placeholder { color: var(--muted); opacity: 0.7; }
+
+.settings-sports {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-sport {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  transition: border-color 100ms;
+}
+.settings-sport.has-selected { border-color: rgba(227, 108, 51, 0.45); }
+
+.settings-sport-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--cream-soft);
+  padding: 4px 14px 4px 4px;
+  border-bottom: 1px solid transparent;
+  transition: border-color 100ms;
+}
+.settings-sport.open .settings-sport-head { border-bottom-color: var(--border); }
+
+.settings-sport-toggle {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: transparent;
+  border: 0;
+  padding: 12px 12px 12px 14px;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  color: var(--ink);
+  border-radius: 8px;
+  transition: background 80ms;
+}
+.settings-sport-toggle:hover { background: rgba(227, 108, 51, 0.08); }
+.settings-sport-toggle:focus-visible {
+  outline: 2px solid var(--orange);
+  outline-offset: -2px;
+}
+
+.settings-sport-chevron {
+  font-size: 14px;
+  color: var(--orange-dark);
+  width: 14px;
+  display: inline-block;
+  text-align: center;
+  transition: transform 120ms;
+}
+
+.settings-sport-name {
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--black);
+  letter-spacing: -0.1px;
+  flex: 1;
+}
+
+.settings-sport-meta {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-sport-master {
+  display: flex;
+  align-items: center;
+  padding: 8px 6px;
+  cursor: pointer;
+  border-radius: 6px;
+}
+.settings-sport-master input[type="checkbox"] {
+  width: 18px; height: 18px;
+  accent-color: var(--orange);
+  cursor: pointer;
+  margin: 0;
+}
+
+.settings-sport-leagues {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  padding: 6px 6px 10px;
+  gap: 0;
+}
+.settings-sport-leagues .check-row { padding: 7px 12px; border-radius: 6px; }
+.settings-sport-leagues .check-row:hover { background: var(--cream-soft); }
+
 .check-row {
   display: flex;
   align-items: center;
@@ -1152,6 +1281,17 @@ main {
   gap: 14px;
   align-items: flex-end;
 }
+/* Non-football: just a "click for detail" hint instead of football-shaped
+   1X2 + OU blocks (which would render empty for sports that don't expose
+   those markets). */
+.match-row-markets.non-football {
+  align-items: center;
+  justify-content: center;
+  padding: 8px 14px;
+  background: var(--cream-soft);
+  border-radius: 8px;
+  font-style: italic;
+}
 .market-block {
   display: flex;
   flex-direction: column;
@@ -1451,11 +1591,102 @@ main {
 .skel-market   { height: 50px; margin-bottom: 6px; }
 
 /* ============================================================
+   Burger / mobile drawer
+   ============================================================ */
+
+.burger {
+  display: none;
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  cursor: pointer;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  transition: background 80ms, border-color 80ms;
+  margin-left: 4px;
+}
+.burger:hover { background: var(--cream-soft); border-color: var(--orange); }
+.burger:focus-visible {
+  outline: 2px solid var(--orange);
+  outline-offset: 2px;
+}
+.burger-bar {
+  display: block;
+  width: 22px;
+  height: 2.5px;
+  background: var(--orange-dark);
+  border-radius: 2px;
+  transition: transform 160ms ease, opacity 120ms ease;
+}
+.burger.open .burger-bar:nth-child(1) { transform: translateY(7.5px) rotate(45deg); }
+.burger.open .burger-bar:nth-child(2) { opacity: 0; }
+.burger.open .burger-bar:nth-child(3) { transform: translateY(-7.5px) rotate(-45deg); }
+
+.mobile-nav-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(20, 17, 13, 0.45);
+  backdrop-filter: blur(2px);
+  z-index: 40;
+  animation: backdrop-in 140ms ease-out;
+}
+
+.mobile-nav {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(82vw, 320px);
+  background: var(--cream);
+  border-left: 2px solid var(--orange);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 70px 14px 14px;
+  box-shadow: -8px 0 24px rgba(20, 17, 13, 0.18);
+  animation: drawer-in 200ms cubic-bezier(0.2, 0.7, 0.2, 1.0);
+}
+.mobile-nav .topnav-link {
+  padding: 14px 16px;
+  font-size: 15px;
+  border-radius: 10px;
+}
+
+@keyframes backdrop-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes drawer-in {
+  from { transform: translateX(100%); }
+  to   { transform: translateX(0); }
+}
+
+/* ============================================================
    Mobile
    ============================================================ */
 
 @media (max-width: 720px) {
   .topbar { padding: 11px 14px; gap: 10px; }
+  .topnav-desktop { display: none; }
+  .scan-info { display: none; }
+  .burger { display: inline-flex; }
+  /* Push burger to the right, leaving the refresh button as the primary CTA. */
+  .actions { gap: 8px; }
+  .actions .btn.danger { padding: 8px 12px; font-size: 13px; }
+  .topbar-progress { max-width: 100px; }
+
+  /* Settings on mobile: roomier sport sections, narrower league grid. */
+  .settings-toolbar { top: 56px; padding: 12px 14px; }
+  .settings-search { max-width: 100%; }
+  .settings-sport-leagues { grid-template-columns: 1fr; }
+  .settings-sport-name { font-size: 14.5px; }
+
   .topnav { margin-left: 0; gap: 2px; }
   .topnav-link { padding: 6px 10px; font-size: 12.5px; }
   main { padding: 12px; }

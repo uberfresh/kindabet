@@ -42,6 +42,7 @@ export type OverUnderOdds = {
 export type MatchSummary = {
   id: number;
   sport?: string;              // "football" | "basketball" | … (optional for legacy responses)
+  sport_name_tr?: string;      // Turkish sport name — backend resolves via the EN→TR map
   competition: string;
   league_term: string;
   home: string;

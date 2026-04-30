@@ -221,6 +221,7 @@ def api_matches():
         m["over_under_2_5"]  = hl_ou25.get(m["id"]) or None
         m["market_count"]    = mkt_counts.get(m["id"], 0)
         m["logo_url"]        = scrapers.league_logo_url(m.get("league_term"))
+        m["sport_name_tr"]   = scrapers._kambi_sport_tr(m.get("sport") or "football")
         grouped[m["competition"]].append(m)
     # Preserve our preferred competition order from scrapers.COMPETITIONS
     order = [c["display_name"] for c in scrapers.COMPETITIONS]

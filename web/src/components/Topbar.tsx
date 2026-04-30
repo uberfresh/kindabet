@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Link, NavLink } from "react-router-dom";
+import { Link, NavLink, useLocation } from "react-router-dom";
 import {
   startRefreshAll,
   getRefreshAllStatus,
@@ -14,14 +14,36 @@ type Props = {
 export function Topbar({ onJobComplete }: Props) {
   const [status, setStatus] = useState<RefreshAllStatus | null>(null);
   const [confirming, setConfirming] = useState(false);
-  const [, setTick] = useState(0);  // 1Hz tick to keep relative-time live
+  const [, setTick] = useState(0);  // 30s tick to keep relative-time live
+  const [menuOpen, setMenuOpen] = useState(false);
   const pollRef = useRef<number | null>(null);
+  const location = useLocation();
 
-  // Re-render once per second so "5 dk önce" → "6 dk önce" stays accurate.
+  // Re-render every 30s so "5 dk önce" → "6 dk önce" stays accurate.
   useEffect(() => {
     const t = setInterval(() => setTick((n) => n + 1), 30_000);
     return () => clearInterval(t);
   }, []);
+
+  // Close mobile menu on route change.
+  useEffect(() => { setMenuOpen(false); }, [location.pathname]);
+
+  // Close mobile menu on Esc.
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setMenuOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [menuOpen]);
+
+  // Lock body scroll while drawer is open.
+  useEffect(() => {
+    if (menuOpen) {
+      const prev = document.body.style.overflow;
+      document.body.style.overflow = "hidden";
+      return () => { document.body.style.overflow = prev; };
+    }
+  }, [menuOpen]);
 
   useEffect(() => {
     let cancelled = false;
@@ -92,14 +114,16 @@ export function Topbar({ onJobComplete }: Props) {
   const done = status?.completed ?? 0;
   const failed = status?.failed ?? 0;
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+  const scope = status?.scope || "";
 
   let label: React.ReactNode;
   let extraClass = "danger";
   if (running) {
+    const scopeTag = scope.startsWith("sport:") ? ` (${scope.split(":")[1]})` : "";
     label = (
       <>
         <span className="pulse" />
-        {total > 0 ? `Yenileniyor… ${done}/${total}` : "Başlatılıyor…"}
+        {total > 0 ? `Yenileniyor… ${done}/${total}${scopeTag}` : "Başlatılıyor…"}
       </>
     );
     extraClass = "danger running";
@@ -125,6 +149,20 @@ export function Topbar({ onJobComplete }: Props) {
   const lastScan = status?.finished_at ? fmtRelative(status.finished_at) : "";
   const nextScan = status?.next_scheduled_at ? fmtRelative(status.next_scheduled_at) : "";
 
+  const navLinks = (
+    <>
+      <NavLink to="/" end className={({ isActive }) => "topnav-link" + (isActive ? " active" : "")}>
+        Maçlar
+      </NavLink>
+      <NavLink to="/firsatlar" className={({ isActive }) => "topnav-link" + (isActive ? " active" : "")}>
+        Fırsatlar
+      </NavLink>
+      <NavLink to="/ayarlar" className={({ isActive }) => "topnav-link" + (isActive ? " active" : "")}>
+        Ayarlar
+      </NavLink>
+    </>
+  );
+
   return (
     <header className="topbar">
       <Link to="/" className="brand">
@@ -132,17 +170,7 @@ export function Topbar({ onJobComplete }: Props) {
         <span className="brand-name">Kinda Bet</span>
       </Link>
 
-      <nav className="topnav">
-        <NavLink to="/" end className={({ isActive }) => "topnav-link" + (isActive ? " active" : "")}>
-          Maçlar
-        </NavLink>
-        <NavLink to="/firsatlar" className={({ isActive }) => "topnav-link" + (isActive ? " active" : "")}>
-          Fırsatlar
-        </NavLink>
-        <NavLink to="/ayarlar" className={({ isActive }) => "topnav-link" + (isActive ? " active" : "")}>
-          Ayarlar
-        </NavLink>
-      </nav>
+      <nav className="topnav topnav-desktop">{navLinks}</nav>
 
       {(lastScan || nextScan) && !running && (
         <div className="scan-info muted small">
@@ -182,6 +210,32 @@ export function Topbar({ onJobComplete }: Props) {
           <span className="muted small">{failed} maç güncellenemedi</span>
         )}
       </div>
+
+      <button
+        className={`burger ${menuOpen ? "open" : ""}`}
+        type="button"
+        aria-label={menuOpen ? "Menüyü kapat" : "Menüyü aç"}
+        aria-expanded={menuOpen}
+        aria-controls="mobile-nav-drawer"
+        onClick={() => setMenuOpen((v) => !v)}
+      >
+        <span className="burger-bar" />
+        <span className="burger-bar" />
+        <span className="burger-bar" />
+      </button>
+
+      {menuOpen && (
+        <>
+          <div
+            className="mobile-nav-backdrop"
+            onClick={() => setMenuOpen(false)}
+            aria-hidden="true"
+          />
+          <nav id="mobile-nav-drawer" className="mobile-nav" aria-label="Mobil menü">
+            {navLinks}
+          </nav>
+        </>
+      )}
     </header>
   );
 }
