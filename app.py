@@ -238,14 +238,51 @@ def api_matches():
     })
 
 
-# Display order for canonical market families. Anything not listed sorts after
-# this in alphabetical order on market_key.
+# Display order for canonical market families. Anything not listed sorts
+# after this in alphabetical order on market_key. Multi-sport: each sport's
+# "primary" (head-to-head) market goes first, then totals, then handicaps.
 _MARKET_ORDER = [
+    # Football
     "MATCH_RESULT_FT",
     "DOUBLE_CHANCE_FT",
     "BTTS_FT",
     "OVER_UNDER_FT",
     "HANDICAP_FT",
+    "HANDICAP_3WAY_FT",
+    # Basketball
+    "BASKETBALL_MONEYLINE",
+    "BASKETBALL_TOTAL",
+    "BASKETBALL_SPREAD",
+    # Ice Hockey
+    "HOCKEY_HANDICAP_3WAY",
+    "HOCKEY_TOTAL",
+    "HOCKEY_PUCK_LINE",
+    "HOCKEY_HANDICAP_3WAY_RT",
+    "HOCKEY_TOTAL_RT",
+    "HOCKEY_PUCK_LINE_RT",
+    # Tennis / Volleyball / MMA share the no-draw winner
+    "MATCH_WINNER",
+    "TENNIS_SET_HANDICAP",
+    "TENNIS_TOTAL_GAMES",
+    "TENNIS_GAME_HANDICAP",
+    "VOLLEYBALL_TOTAL_SETS",
+    "VOLLEYBALL_SET_HANDICAP",
+    "VOLLEYBALL_TOTAL_POINTS",
+    # Handball
+    "HANDBALL_RESULT_FT",
+    "HANDBALL_DOUBLE_CHANCE",
+    "HANDBALL_DNB",
+    "HANDBALL_HANDICAP",
+    "HANDBALL_HANDICAP_3WAY",
+    "HANDBALL_TOTAL",
+    # Baseball
+    "BASEBALL_TOTAL_RUNS",
+    "BASEBALL_RUN_LINE",
+    # MMA
+    "MMA_BOUT_RESULT",
+    "MMA_TOTAL_ROUNDS",
+    "MMA_METHOD",
+    "MMA_DISTANCE",
 ]
 
 def _market_sort_key(market_key):
@@ -264,10 +301,32 @@ def _market_sort_key(market_key):
 
 # Selection display order within a market family.
 _SELECTION_ORDER = {
-    "MATCH_RESULT_FT":  ["1", "X", "2"],
-    "DOUBLE_CHANCE_FT": ["1X", "12", "X2"],
-    "BTTS_FT":          ["YES", "NO"],
-    "OVER_UNDER_FT":    ["OVER", "UNDER"],
+    # Football
+    "MATCH_RESULT_FT":         ["1", "X", "2"],
+    "MATCH_RESULT_HT":         ["1", "X", "2"],
+    "MATCH_RESULT_2H":         ["1", "X", "2"],
+    "DOUBLE_CHANCE_FT":        ["1X", "12", "X2"],
+    "BTTS_FT":                 ["YES", "NO"],
+    "OVER_UNDER_FT":           ["OVER", "UNDER"],
+    "OVER_UNDER_1H":           ["OVER", "UNDER"],
+    "OVER_UNDER_2H":           ["OVER", "UNDER"],
+    # Generic OU-shaped markets — same pattern across sports.
+    "BASKETBALL_TOTAL":        ["OVER", "UNDER"],
+    "HOCKEY_TOTAL":            ["OVER", "UNDER"],
+    "HOCKEY_TOTAL_RT":         ["OVER", "UNDER"],
+    "TENNIS_TOTAL_GAMES":      ["OVER", "UNDER"],
+    "VOLLEYBALL_TOTAL_POINTS": ["OVER", "UNDER"],
+    "VOLLEYBALL_TOTAL_SETS":   ["OVER", "UNDER"],
+    "HANDBALL_TOTAL":          ["OVER", "UNDER"],
+    "BASEBALL_TOTAL_RUNS":     ["OVER", "UNDER"],
+    "MMA_TOTAL_ROUNDS":        ["OVER", "UNDER"],
+    "MMA_DISTANCE":            ["YES", "NO"],
+    # 3-way handicap (1/X/2) — non-football too
+    "HOCKEY_HANDICAP_3WAY":    ["1", "X", "2"],
+    "HOCKEY_HANDICAP_3WAY_RT": ["1", "X", "2"],
+    "HANDBALL_RESULT_FT":      ["1", "X", "2"],
+    "HANDBALL_HANDICAP_3WAY":  ["1", "X", "2"],
+    "HANDBALL_DOUBLE_CHANCE":  ["1X", "12", "X2"],
 }
 
 def _selection_sort_key(market_key, selection_key):

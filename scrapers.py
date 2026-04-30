@@ -616,6 +616,7 @@ def league_display_name(league_term, brand=None):
 #
 # Discovered by inspecting betoffer/event payloads. Add more as we find them.
 KAMBI_CANONICAL_CRIT = {
+    # ===== Football =====
     1001159858: "MATCH_RESULT_FT",     # FT 1X2 (the canonical "Full Time" Match Result)
     1000316018: "MATCH_RESULT_HT",     # 1X2 at half time
     1001159826: "MATCH_RESULT_2H",     # 1X2 in the 2nd half
@@ -639,6 +640,46 @@ KAMBI_CANONICAL_CRIT = {
     1003194957: "OVER_UNDER_AWAY_2H",
     1001159750: "FIRST_GOAL_FT",
     1005692199: "TO_QUALIFY",
+    # ===== Basketball =====
+    # All basketball markets are "Including Overtime" by default in Kambi —
+    # that's the actual final-result series most operators settle on.
+    1001159732: "BASKETBALL_MONEYLINE",   # Moneyline (head-to-head, no draw)
+    1001159509: "BASKETBALL_TOTAL",       # Total Points
+    1001159512: "BASKETBALL_SPREAD",      # Point Spread (handicap)
+    # ===== Ice Hockey =====
+    # Hockey distinguishes "Regular Time" (RT, 60 min) from "Including OT"
+    # (incl shootout) — settle differently, so canonicalize separately.
+    1001482065: "HOCKEY_HANDICAP_3WAY_RT",
+    1006583306: "HOCKEY_HANDICAP_3WAY",
+    1001105863: "HOCKEY_TOTAL_RT",
+    1001806062: "HOCKEY_TOTAL",
+    1001105889: "HOCKEY_PUCK_LINE_RT",
+    1006584055: "HOCKEY_PUCK_LINE",
+    # ===== Tennis =====
+    1001159891: "TENNIS_TOTAL_GAMES",
+    1001427539: "TENNIS_GAME_HANDICAP",
+    1001419385: "TENNIS_SET_HANDICAP",
+    # ===== Volleyball =====
+    1001159603: "VOLLEYBALL_TOTAL_POINTS",
+    1001639432: "VOLLEYBALL_SET_HANDICAP",
+    1001159489: "VOLLEYBALL_TOTAL_SETS",
+    # ===== Match Winner (no-draw 2-way) — used by tennis, volleyball, MMA =====
+    1001160042: "MATCH_WINNER",
+    # ===== Handball (footy-shaped markets but distinct enough to namespace) =====
+    1001105805: "HANDBALL_RESULT_FT",
+    1001105726: "HANDBALL_HANDICAP",
+    1001105791: "HANDBALL_HANDICAP_3WAY",
+    1001105804: "HANDBALL_DOUBLE_CHANCE",
+    1001105798: "HANDBALL_DNB",
+    1001105866: "HANDBALL_TOTAL",
+    # ===== Baseball =====
+    1001159850: "BASEBALL_TOTAL_RUNS",
+    1001159777: "BASEBALL_RUN_LINE",
+    # ===== MMA / UFC =====
+    1001160027: "MMA_BOUT_RESULT",     # Bout Odds (head-to-head)
+    1001159754: "MMA_METHOD",          # Winning Method (KO/TKO, Submission, Decision)
+    1001985368: "MMA_TOTAL_ROUNDS",    # Over/under rounds
+    1001159960: "MMA_DISTANCE",        # To Go The Distance (yes/no)
 }
 
 # Markets we deliberately don't surface (cluttery and rarely worth comparing).
@@ -677,6 +718,7 @@ def _kambi_offer_line(offer):
 # canonical English form for cross-operator alignment; only the *displayed*
 # label is localized.
 MARKET_LABELS_TR = {
+    # Football
     "MATCH_RESULT_FT":     "Maç Sonucu",
     "MATCH_RESULT_HT":     "İlk Yarı Sonucu",
     "MATCH_RESULT_2H":     "İkinci Yarı Sonucu",
@@ -702,6 +744,42 @@ MARKET_LABELS_TR = {
     "HANDICAP_3WAY_1H":    "Üçlü Handikap (İlk Yarı)",
     "FIRST_GOAL_FT":       "İlk Gol",
     "TO_QUALIFY":          "Tur Atlama",
+    # No-draw match winner — tennis, volleyball, some MMA placements
+    "MATCH_WINNER":              "Maç Kazananı",
+    # Basketball
+    "BASKETBALL_MONEYLINE":      "Maç Sonucu (Uzatma Dahil)",
+    "BASKETBALL_TOTAL":          "Toplam Sayı (Uzatma Dahil)",
+    "BASKETBALL_SPREAD":         "Sayı Farkı (Uzatma Dahil)",
+    # Ice Hockey
+    "HOCKEY_HANDICAP_3WAY":      "Üçlü Handikap (Uzatma Dahil)",
+    "HOCKEY_HANDICAP_3WAY_RT":   "Üçlü Handikap (Normal Süre)",
+    "HOCKEY_TOTAL":              "Toplam Gol (Uzatma Dahil)",
+    "HOCKEY_TOTAL_RT":           "Toplam Gol (Normal Süre)",
+    "HOCKEY_PUCK_LINE":          "Puck Line (Uzatma Dahil)",
+    "HOCKEY_PUCK_LINE_RT":       "Puck Line (Normal Süre)",
+    # Tennis
+    "TENNIS_TOTAL_GAMES":        "Toplam Oyun",
+    "TENNIS_GAME_HANDICAP":      "Oyun Handikabı",
+    "TENNIS_SET_HANDICAP":       "Set Handikabı",
+    # Volleyball
+    "VOLLEYBALL_TOTAL_POINTS":   "Toplam Sayı",
+    "VOLLEYBALL_SET_HANDICAP":   "Set Handikabı",
+    "VOLLEYBALL_TOTAL_SETS":     "Toplam Set",
+    # Handball
+    "HANDBALL_RESULT_FT":        "Maç Sonucu",
+    "HANDBALL_HANDICAP":         "Handikap",
+    "HANDBALL_HANDICAP_3WAY":    "Üçlü Handikap",
+    "HANDBALL_DOUBLE_CHANCE":    "Çifte Şans",
+    "HANDBALL_DNB":              "Beraberlikte İade",
+    "HANDBALL_TOTAL":            "Toplam Gol",
+    # Baseball
+    "BASEBALL_TOTAL_RUNS":       "Toplam Sayı",
+    "BASEBALL_RUN_LINE":         "Run Line",
+    # MMA / UFC
+    "MMA_BOUT_RESULT":           "Maç Sonucu",
+    "MMA_METHOD":                "Kazanma Şekli",
+    "MMA_TOTAL_ROUNDS":          "Toplam Raund",
+    "MMA_DISTANCE":              "Tüm Raundları Tamamlama",
 }
 
 # Turkish labels for normalized selection keys. Team-name selections (used by
