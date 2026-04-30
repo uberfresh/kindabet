@@ -412,12 +412,19 @@ def _build_market_view(rows, reference_operator, all_operators=None):
         if not r.get("ok") or r.get("odd") is None:
             continue
         s["ops"][r["operator"]] = {
-            "operator": r["operator"],
-            "odd":      r["odd"],
-            "ok":       True,
-            "note":     r.get("note"),
-            "taken_at": r.get("taken_at"),
-            "status":   "ok",
+            "operator":      r["operator"],
+            "odd":           r["odd"],
+            "ok":            True,
+            "note":          r.get("note"),
+            "taken_at":      r.get("taken_at"),
+            "status":        "ok",
+            # Change-detection fields — surface what the prior value was so
+            # the UI can flash green/red when this odd just shifted, and
+            # gate the sparkline-on-hover behavior to cells that actually
+            # have history (change_count > 1).
+            "prev_odd":      r.get("prev_odd"),
+            "prev_taken_at": r.get("prev_taken_at"),
+            "change_count":  r.get("change_count") or 1,
         }
 
     out_markets = []

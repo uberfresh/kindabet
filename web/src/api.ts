@@ -12,7 +12,39 @@ export type OperatorOdd = {
   taken_at: string | null;
   diff_pct: number | null;
   status: OddStatus;
+  // Change-detection (only present for ok cells; null when no prior history).
+  prev_odd?: number | null;
+  prev_taken_at?: string | null;
+  change_count?: number;          // 1 = never changed, >1 = sparkline available
 };
+
+export type OddsHistoryItem = {
+  taken_at: string;
+  last_seen_at: string | null;
+  operator: string;
+  market_key: string;
+  market_label: string;
+  selection_key: string;
+  selection_label: string;
+  line: number | null;
+  odd: number | null;
+  ok: boolean;
+  is_active: number;
+};
+
+export type OddsHistoryResponse = { items: OddsHistoryItem[]; count: number };
+
+export function fetchMatchHistory(
+  matchId: number,
+  args: { operator?: string; market_key?: string; selection_key?: string; limit?: number }
+): Promise<OddsHistoryResponse> {
+  const q = new URLSearchParams();
+  if (args.operator)      q.set("operator", args.operator);
+  if (args.market_key)    q.set("market_key", args.market_key);
+  if (args.selection_key) q.set("selection_key", args.selection_key);
+  if (args.limit)         q.set("limit", String(args.limit));
+  return api<OddsHistoryResponse>(`/api/match/${matchId}/history?${q.toString()}`);
+}
 
 export type Selection = {
   selection_key: string;

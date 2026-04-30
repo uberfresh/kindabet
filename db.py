@@ -284,14 +284,56 @@ def market_counts(operator):
 
 def latest_odds(match_id):
     """All currently-active rows for a match. is_active=1 means the row was
-    emitted by its operator's most recent refresh."""
+    emitted by its operator's most recent refresh.
+
+    Each returned row also carries:
+      * prev_odd   — the prior DISTINCT value for this (op, market, selection),
+                     or None if this is the first time we've seen it.
+      * prev_taken_at — when prev_odd was first recorded.
+      * change_count — total number of distinct value rows we've recorded
+                       for this (op, market, selection). 1 means "never
+                       changed since first scrape"; >1 means there's history.
+
+    These let the UI show a flash/delta indicator without an extra DB
+    round-trip per cell."""
     with _lock, conn() as c:
+        # Window-function pull: for each (operator, market_key, selection_key)
+        # rank rows by id DESC (latest row is rn=1, prior is rn=2). We only
+        # need rn=1 (the active row) and rn=2 (the previous distinct value).
         rows = c.execute("""
-            SELECT * FROM odds_snapshots
-            WHERE match_id = ? AND is_active = 1
-            ORDER BY market_key, selection_key, operator
+            WITH ranked AS (
+                SELECT *,
+                       ROW_NUMBER() OVER (PARTITION BY operator, market_key, selection_key
+                                          ORDER BY id DESC) AS rn,
+                       COUNT(*) OVER (PARTITION BY operator, market_key, selection_key) AS total_versions
+                FROM odds_snapshots
+                WHERE match_id = ?
+            )
+            SELECT * FROM ranked WHERE rn IN (1, 2)
+            ORDER BY operator, market_key, selection_key, rn
         """, (match_id,)).fetchall()
-        return [dict(r) for r in rows]
+
+        # Pair up rn=1 (current) with rn=2 (prior) per triple.
+        out = []
+        by_key = {}
+        for r in rows:
+            key = (r["operator"], r["market_key"], r["selection_key"])
+            by_key.setdefault(key, {})[r["rn"]] = dict(r)
+
+        for key, pair in by_key.items():
+            cur = pair.get(1)
+            if not cur or not cur.get("is_active"):
+                # Skip triples whose latest row is no longer active (i.e.,
+                # the market was retired in the most recent refresh).
+                continue
+            prev = pair.get(2)
+            cur["prev_odd"]      = prev.get("odd") if prev else None
+            cur["prev_taken_at"] = prev.get("taken_at") if prev else None
+            cur["change_count"]  = cur.get("total_versions") or 1
+            out.append(cur)
+
+        out.sort(key=lambda r: (r["market_key"], r["selection_key"], r["operator"]))
+        return out
 
 
 def odds_history(match_id, operator=None, market_key=None, selection_key=None, limit=2000):

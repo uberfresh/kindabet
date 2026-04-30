@@ -506,8 +506,78 @@ main {
   color: var(--orange);
 }
 
-.cmp-cell { font-variant-numeric: tabular-nums; }
+.cmp-cell {
+  font-variant-numeric: tabular-nums;
+  position: relative;          /* anchor for the sparkline popover */
+}
 .cmp-cell .odd { font-weight: 600; color: var(--black); }
+
+/* ---- Change-detection: pulse + chip + sparkline popover ---- */
+
+.cmp-cell.just-changed {
+  animation: cell-flash 1.2s ease-out;
+}
+@keyframes cell-flash {
+  0%   { background: rgba(255, 211, 138, 0.55); }
+  100% { background: transparent; }
+}
+
+.trend-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 6px;
+  padding: 0px 6px;
+  border-radius: 5px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  vertical-align: middle;
+}
+.trend-chip.up   { background: var(--good-bg); color: var(--good); }
+.trend-chip.down { background: var(--bad-bg);  color: var(--bad);  }
+.trend-chip .trend-from {
+  text-decoration: line-through;
+  opacity: 0.55;
+  font-weight: 500;
+}
+
+/* Hover popover anchored to the cell. min-width matches Sparkline width
+   (220) so we don't reflow when content swaps from "loading" to chart. */
+.spark-pop {
+  position: absolute;
+  z-index: 30;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  box-shadow: 0 6px 20px rgba(20, 17, 13, 0.18);
+  padding: 8px 10px;
+  min-width: 240px;
+  pointer-events: none;        /* don't intercept the underlying mouseleave */
+  animation: spark-in 110ms ease-out;
+}
+.spark-pop::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-top-color: var(--panel);
+  filter: drop-shadow(0 1px 0 var(--border-strong));
+}
+.spark-pop-head { font-weight: 600; margin-bottom: 4px; color: var(--ink); opacity: 0.8; }
+.spark-pop-foot { margin-top: 2px; }
+.spark-pop-loading { padding: 18px 4px; text-align: center; }
+.sparkline { display: block; }
+
+@keyframes spark-in {
+  from { opacity: 0; transform: translate(-50%, 4px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
+}
 
 .diff {
   display: inline-block;

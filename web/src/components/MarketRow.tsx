@@ -4,12 +4,13 @@ import { fmtOdd, formatMarketLabel } from "../format";
 import { ComparisonTable } from "./ComparisonTable";
 
 type Props = {
+  matchId: number;
   market: Market;
   referenceOperator: string;
   allOperators: string[];
 };
 
-export function MarketRow({ market, referenceOperator, allOperators }: Props) {
+export function MarketRow({ matchId, market, referenceOperator, allOperators }: Props) {
   const [open, setOpen] = useState(false);
   const fullLabel = formatMarketLabel({
     market_label: market.market_label || market.market_key,
@@ -33,6 +34,7 @@ export function MarketRow({ market, referenceOperator, allOperators }: Props) {
       {open && (
         <div className="market-body">
           <ComparisonTable
+            matchId={matchId}
             market={market}
             referenceOperator={referenceOperator}
             allOperators={allOperators}

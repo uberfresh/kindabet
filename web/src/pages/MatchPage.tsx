@@ -116,6 +116,7 @@ export default function MatchPage() {
             detail.markets.map((mkt) => (
               <MarketRow
                 key={mkt.market_key}
+                matchId={matchId}
                 market={mkt}
                 referenceOperator={detail.reference_operator}
                 allOperators={detail.operators}
