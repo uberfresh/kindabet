@@ -48,6 +48,19 @@ def _http_get(url, timeout=12, headers=None):
 def _http_get_json(url, timeout=12, headers=None):
     return json.loads(_http_get(url, timeout, headers).decode("utf-8"))
 
+# Turkish-specific letters that NFKD doesn't decompose (they're independent
+# code points in Unicode, not diacritic combinations). Without this step,
+# 'Sarıyer' normalizes to 'sar yer' (dotless ı → stripped by [a-z0-9]) while
+# TOTO's 'Sariyer' normalizes to 'sariyer' — and the two no longer match.
+_TURKISH_ASCII = str.maketrans({
+    "ı": "i", "İ": "i",
+    "ş": "s", "Ş": "s",
+    "ğ": "g", "Ğ": "g",
+    "ü": "u", "Ü": "u",
+    "ö": "o", "Ö": "o",
+    "ç": "c", "Ç": "c",
+})
+
 _TEAM_ALIASES = {
     "psg": "paris saint germain",
     "atl": "atletico",
@@ -68,6 +81,7 @@ _TEAM_ALIASES = {
 def _normalize_team(s):
     if not s:
         return ""
+    s = s.translate(_TURKISH_ASCII)
     s = unicodedata.normalize("NFKD", s)
     s = "".join(c for c in s if not unicodedata.combining(c))
     s = s.lower().strip()
@@ -583,6 +597,60 @@ def fetch_kambi(operator, kambi_event_id, **_):
 #   3. Walk the DOM, extract every {"id":"...", "eventId":"<id>", ...} object
 #   4. Map TOTO groupCode → canonical market_key (aligns with Kambi)
 
+# TOTO search has a fairly tight rate limit. During a bulk refresh we hit
+# /search dozens of times per minute (each match → ~6 query attempts). To
+# stay below the limit we (a) cache results in-process for 60s so repeated
+# queries for the same token (Hatayspor home + Hatayspor away of two matches)
+# collapse, (b) soft-throttle distinct lookups to roughly 2 req/s, and
+# (c) retry once on HTTP 429.
+_toto_search_cache = {}                       # query_text → (timestamp, list[ev])
+_toto_search_cache_lock = threading.Lock()
+_TOTO_SEARCH_CACHE_TTL = 60.0
+_TOTO_SEARCH_THROTTLE_S = 0.4
+_toto_throttle_lock = threading.Lock()
+_toto_last_call_ts = [0.0]                    # mutable container — accessed under throttle_lock
+
+def _toto_search_query(text):
+    """Run a TOTO /search with caching, throttling, and one 429 retry.
+    Returns the events list (possibly empty); never raises."""
+    now = time.time()
+    with _toto_search_cache_lock:
+        cached = _toto_search_cache.get(text)
+        if cached and (now - cached[0]) < _TOTO_SEARCH_CACHE_TTL:
+            return cached[1]
+    # Soft throttle — block briefly if we ran another query too recently.
+    with _toto_throttle_lock:
+        wait = _TOTO_SEARCH_THROTTLE_S - (time.time() - _toto_last_call_ts[0])
+        if wait > 0:
+            time.sleep(wait)
+        _toto_last_call_ts[0] = time.time()
+
+    url = f"https://sport-api.toto.nl/search?searchText={urllib.parse.quote(text)}"
+    events = []
+    succeeded = False
+    for attempt in range(2):
+        try:
+            req = urllib.request.Request(url, headers={
+                "User-Agent": UA, "Accept": "application/json"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                d = json.loads(r.read().decode("utf-8"))
+            events = d.get("events", []) or []
+            succeeded = True
+            break
+        except urllib.error.HTTPError as e:
+            if getattr(e, "code", None) == 429 and attempt == 0:
+                time.sleep(2.0)  # one cooldown then retry
+                continue
+            break
+        except Exception:
+            break
+    # Only cache successful responses; caching a 429-induced empty list would
+    # poison the next bulk-refresh sweep with false negatives.
+    if succeeded:
+        with _toto_search_cache_lock:
+            _toto_search_cache[text] = (time.time(), events)
+    return events
+
 def _toto_search_event(home, away, kickoff_utc_iso=None):
     """Find a TOTO event matching (home, away). Returns event dict or None."""
     norm_home = _normalize_team(home)
@@ -595,13 +663,7 @@ def _toto_search_event(home, away, kickoff_utc_iso=None):
         if src and src not in queries:
             queries.append(src)
     for q in queries[:6]:
-        try:
-            d = _http_get_json(
-                f"https://sport-api.toto.nl/search?searchText={urllib.parse.quote(q)}",
-                timeout=10, headers={"Accept": "application/json"})
-        except Exception:
-            continue
-        for ev in d.get("events", []) or []:
+        for ev in _toto_search_query(q):
             name = ev.get("name", "")
             if _team_match(home, name) and _team_match(away, name):
                 return ev
@@ -834,19 +896,22 @@ def fetch_toto(home, away, kickoff_utc_iso=None, **_):
 
 TONYBET_CATEGORIES = (101, 41, 111)
 
-# market.id → (canonical_root, has_line, outcome_id → selection_key)
+# market.id → (canonical_root, line_mode, outcome_id → selection_key)
 #
-# Markets we deliberately skip:
-#   * 868 (Total Goals OU) — TonyBet's API returns OU outcomes with NO line
-#     specifier, so we can't align with Kambi's per-line OU markets. Defaulting
-#     to 2.5 mis-compares Hatayspor (main line ~3.5) against Brighton (~1.5).
-#   * 557 (Asian Handicap) — product decision: Asian Handicap is removed from
-#     the catalog system-wide because it clutters the comparison without
-#     adding signal versus the European 2-/3-way handicap.
+# `line_mode` values:
+#   False     — no line; emit market_key = root.
+#   "INFER"   — line not exposed in payload; emit a placeholder
+#               OVER_UNDER_FT@? row, then resolve the line at orchestration
+#               time by comparing Over prices against Kambi's per-line OU
+#               markets (see `_align_tonybet_inferred_lines`).
+#
+# Market 557 (Asian Handicap) is intentionally absent — Asian Handicap is
+# removed from the catalog system-wide.
 TONYBET_MARKETS = {
-    621: ("MATCH_RESULT_FT",   False, {1: "1", 2: "X", 3: "2"}),
-    589: ("BTTS_FT",           False, {74: "YES", 76: "NO"}),
-    721: ("DOUBLE_CHANCE_FT",  False, {436: "1X", 438: "12", 440: "X2"}),
+    621: ("MATCH_RESULT_FT",   False,    {1: "1", 2: "X", 3: "2"}),
+    589: ("BTTS_FT",           False,    {74: "YES", 76: "NO"}),
+    721: ("DOUBLE_CHANCE_FT",  False,    {436: "1X", 438: "12", 440: "X2"}),
+    868: ("OVER_UNDER_FT",     "INFER",  {4: "OVER", 5: "UNDER"}),
 }
 
 # Cached per-category fetch — bulk-refresh hits the same API many times,
@@ -940,18 +1005,18 @@ def fetch_tonybet(home, away, kickoff_utc_iso=None, **_):
         mapping = TONYBET_MARKETS.get(m.get("id"))
         if not mapping:
             continue
-        canonical_root, has_line, sel_remap = mapping
+        canonical_root, line_mode, sel_remap = mapping
         line_f = None
-        if has_line:
+        if line_mode == "INFER":
+            # Placeholder market_key — line resolved at orchestration time by
+            # cross-referencing Kambi's per-line OU.
+            market_key = f"{canonical_root}@?"
+        elif line_mode:
             line_f = _tonybet_parse_line(m.get("specifiers"))
-            if line_f is None and canonical_root == "OVER_UNDER_FT":
-                line_f = 2.5  # TonyBet ships only the main OU line; default to 2.5 if missing
-
-        market_key = (
-            f"{canonical_root}@{line_f:g}"
-            if has_line and line_f is not None
-            else canonical_root
-        )
+            market_key = (f"{canonical_root}@{line_f:g}"
+                          if line_f is not None else canonical_root)
+        else:
+            market_key = canonical_root
         market_label = MARKET_LABELS_TR.get(canonical_root, canonical_root)
 
         for o in m.get("outcomes", []) or []:
@@ -1043,6 +1108,55 @@ def discover_matches(competitions=None):
     out.sort(key=lambda m: (m["competition"], m["kickoff_utc_iso"] or ""))
     return out
 
+def _align_tonybet_inferred_lines(rows):
+    """Resolve TonyBet's `OVER_UNDER_FT@?` placeholders to a real line by
+    finding the Kambi (711 → Unibet fallback) per-line OU market whose Over
+    price is closest. If no Kambi reference is available the placeholders
+    are dropped — better than emitting them with a wrong/random line."""
+    placeholders = [r for r in rows
+                    if r.get("operator") == "TonyBet.nl"
+                    and r.get("market_key") == "OVER_UNDER_FT@?"]
+    if not placeholders:
+        return
+
+    tb_over = next((r["odd"] for r in placeholders
+                    if r.get("selection_key") == "OVER" and r.get("odd")), None)
+    if tb_over is None:
+        for r in placeholders:
+            rows.remove(r)
+        return
+
+    # Build {line: kambi_over_odd} from 711 first, then fall back to Unibet.
+    kambi_lines = {}
+    for ref_op in (REFERENCE_OPERATOR, FALLBACK_OPERATOR):
+        for r in rows:
+            if (r.get("operator") == ref_op
+                and r.get("selection_key") == "OVER"
+                and r.get("ok") and r.get("odd") is not None):
+                mk = r.get("market_key", "")
+                if not mk.startswith("OVER_UNDER_FT@"):
+                    continue
+                try:
+                    line = float(mk.split("@", 1)[1])
+                except ValueError:
+                    continue
+                kambi_lines[line] = r["odd"]
+        if kambi_lines:
+            break
+
+    if not kambi_lines:
+        for r in placeholders:
+            rows.remove(r)
+        return
+
+    best_line = min(kambi_lines.keys(),
+                    key=lambda L: abs(tb_over - kambi_lines[L]))
+    new_key = f"OVER_UNDER_FT@{best_line:g}"
+    for r in placeholders:
+        r["market_key"] = new_key
+        r["line"] = best_line
+
+
 def fetch_all_for_match(match):
     """Run every operator's fetcher for one match. Returns list of odds rows
     annotated with operator + license."""
@@ -1064,4 +1178,6 @@ def fetch_all_for_match(match):
             r["operator"] = name
             r["license"] = lic
             rows.append(r)
+
+    _align_tonybet_inferred_lines(rows)
     return rows
