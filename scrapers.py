@@ -137,10 +137,12 @@ KAMBI_BRANDS = {
 
 KAMBI_BASE = "https://eu-offering-api.kambicdn.com/offering/v2018"
 
-def kambi_listview(brand, league_term):
-    """Kambi listView events for a league. league_term may be 'champions_league'
-    or country-prefixed like 'england/premier_league'."""
-    url = f"{KAMBI_BASE}/{brand}/listView/football/{league_term}.json?lang=nl_NL&market=NL"
+def kambi_listview(brand, league_term, sport_term="football"):
+    """Kambi listView events for a league within a sport. `league_term` is the
+    Kambi-native termKey (e.g. 'champions_league' or country-prefixed like
+    'england/premier_league'). `sport_term` defaults to 'football' for
+    backwards compat with the original football-only API."""
+    url = f"{KAMBI_BASE}/{brand}/listView/{sport_term}/{league_term}.json?lang=nl_NL&market=NL"
     try:
         d = _http_get_json(url, timeout=10)
         return d.get("events", []) or []
@@ -317,10 +319,219 @@ _KAMBI_COUNTRY_TR = {
     "gibraltar": "Cebelitarık",
 }
 
-# 5-minute TTL cache for the league list (~80KB JSON, called from a few hot paths).
+# Turkish display names for Kambi sport termKeys. Falls back to englishName
+# (Kambi-provided) when a sport isn't mapped here.
+_KAMBI_SPORT_TR = {
+    "football":          "Futbol",
+    "basketball":        "Basketbol",
+    "tennis":            "Tenis",
+    "ice_hockey":        "Buz Hokeyi",
+    "icehockey":         "Buz Hokeyi",
+    "volleyball":        "Voleybol",
+    "handball":          "Hentbol",
+    "snooker":           "Snooker",
+    "darts":             "Dart",
+    "mma":               "MMA",
+    "ufc":               "UFC",
+    "boxing":            "Boks",
+    "american_football": "Amerikan Futbolu",
+    "baseball":          "Beyzbol",
+    "cricket":           "Kriket",
+    "golf":              "Golf",
+    "rugby_union":       "Ragbi",
+    "rugby_league":      "Ragbi Ligi",
+    "rugby":             "Ragbi",
+    "cycling":           "Bisiklet",
+    "motor_sports":      "Motor Sporları",
+    "esports":           "E-Spor",
+    "table_tennis":      "Masa Tenisi",
+    "badminton":         "Badminton",
+    "speedway":          "Speedway",
+    "floorball":         "Floorball",
+    "futsal":            "Futsal",
+    "beach_soccer":      "Plaj Futbolu",
+    "beach_volleyball":  "Plaj Voleybolu",
+    "winter_sports":     "Kış Sporları",
+    "athletics":         "Atletizm",
+    "swimming":          "Yüzme",
+    "horse_racing":      "At Yarışı",
+    "greyhounds":        "Tazı Yarışı",
+    "lacrosse":          "Lakros",
+    "trotting":          "Tırıs",
+    "water_polo":        "Sutopu",
+    "chess":             "Satranç",
+    "australian_rules":  "Avustralya Futbolu",
+    "motorsports":       "Motor Sporları",
+    "formula_1":         "Formula 1",
+    "netball":           "Netbol",
+    "surfing":           "Sörf",
+    "ufc_mma":           "MMA",
+    "pesapallo":         "Pesäpallo",
+    "politics":          "Politika",
+    "entertainment":     "Eğlence",
+    "tv_specials":       "TV Özel",
+}
+
+def _kambi_sport_tr(sport_term, fallback=None):
+    return _KAMBI_SPORT_TR.get((sport_term or "").lower(), fallback or sport_term or "")
+
+
+# 5-minute TTL cache for league lists (~80KB JSON, called from a few hot paths).
 _leagues_cache_lock = threading.Lock()
 _leagues_cache = {}  # brand -> (timestamp, list)
 _LEAGUES_CACHE_TTL = 300.0
+
+# All-sports cache (heavier walk). Keyed by brand.
+_all_sports_cache = {}  # brand -> (timestamp, list)
+_ALL_SPORTS_CACHE_TTL = 1800.0   # 30 minutes in-memory
+_SPORTS_FILE_CACHE_TTL = 86400.0  # 24 hours on disk
+_SPORTS_FILE_PATH = None  # lazily resolved (avoids import-time os work)
+
+
+def _sports_cache_path():
+    global _SPORTS_FILE_PATH
+    if _SPORTS_FILE_PATH is None:
+        import os
+        here = os.path.dirname(os.path.abspath(__file__))
+        _SPORTS_FILE_PATH = os.path.join(here, "data", "sports.json")
+    return _SPORTS_FILE_PATH
+
+
+def _read_sports_file_cache(brand):
+    """Read brand's cached sport tree from disk if present and fresh.
+    Returns the list or None on miss/expired/error."""
+    import os
+    p = _sports_cache_path()
+    if not os.path.isfile(p):
+        return None
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            d = json.load(f)
+    except Exception:
+        return None
+    entry = (d or {}).get(brand)
+    if not entry:
+        return None
+    age = time.time() - (entry.get("written_at") or 0)
+    if age > _SPORTS_FILE_CACHE_TTL:
+        return None
+    return entry.get("leagues") or None
+
+
+def _write_sports_file_cache(brand, leagues):
+    """Persist brand's sport tree to disk (best-effort; never raises)."""
+    import os
+    p = _sports_cache_path()
+    try:
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        existing = {}
+        if os.path.isfile(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    existing = json.load(f) or {}
+            except Exception:
+                existing = {}
+        existing[brand] = {"written_at": time.time(), "leagues": leagues}
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(existing, f, ensure_ascii=False)
+        os.replace(tmp, p)
+    except Exception:
+        pass
+
+
+def kambi_list_all_sports(brand):
+    """Walk Kambi's full group tree and return every (sport, league) tuple
+    with Turkish display labels. Returns a flat list — frontend groups by
+    sport_term. In-memory cache 30min; disk cache 24h.
+
+    Each row:
+      {
+        "sport_term":    "football",
+        "sport_name_tr": "Futbol",
+        "sport_name_en": "Football",
+        "league_term":   "champions_league" | "england/premier_league",
+        "display_name":  "Uluslararası - Champions League",
+        "country":       "Uluslararası",
+        "country_code":  None | "england",
+      }"""
+    now = time.time()
+    with _leagues_cache_lock:
+        cached = _all_sports_cache.get(brand)
+        if cached and (now - cached[0]) < _ALL_SPORTS_CACHE_TTL:
+            return cached[1]
+        disk = _read_sports_file_cache(brand)
+        if disk:
+            _all_sports_cache[brand] = (now, disk)
+            return disk
+
+    # Depth=3 reaches sport → country → league for nested structures and
+    # sport → league for flat (international) structures.
+    url = f"{KAMBI_BASE}/{brand}/group.json?lang=nl_NL&market=NL&depth=3"
+    try:
+        d = _http_get_json(url, timeout=20)
+    except Exception:
+        return []
+
+    out = []
+    root = d.get("group", {}) or {}
+    sports = root.get("groups", []) or []
+
+    for sport in sports:
+        sport_term = (sport.get("termKey") or "").lower()
+        if not sport_term:
+            continue
+        sport_name_en = sport.get("englishName") or sport.get("name") or sport_term
+        sport_name_tr = _kambi_sport_tr(sport_term, sport_name_en)
+
+        # Sports we explicitly skip — non-sport categories or simulation feeds.
+        if sport_term in ("politics", "entertainment", "tv_specials",
+                          "novelty", "virtual_sports"):
+            continue
+
+        for entry in sport.get("groups", []) or []:
+            children = entry.get("groups", []) or []
+            league_name = entry.get("name") or entry.get("termKey")
+            if not children:
+                # Flat international/cup competition — no country wrapper.
+                lterm = entry.get("termKey")
+                if not lterm:
+                    continue
+                out.append({
+                    "sport_term":    sport_term,
+                    "sport_name_tr": sport_name_tr,
+                    "sport_name_en": sport_name_en,
+                    "league_term":   lterm,
+                    "display_name":  f"Uluslararası - {league_name}",
+                    "country":       "Uluslararası",
+                    "country_code":  None,
+                })
+            else:
+                country_term = entry.get("termKey")
+                country_nl   = entry.get("name") or country_term
+                country_tr   = _KAMBI_COUNTRY_TR.get(country_term, country_nl)
+                for league in children:
+                    lterm = league.get("termKey")
+                    if not lterm:
+                        continue
+                    lname = league.get("name") or lterm
+                    out.append({
+                        "sport_term":    sport_term,
+                        "sport_name_tr": sport_name_tr,
+                        "sport_name_en": sport_name_en,
+                        "league_term":   f"{country_term}/{lterm}",
+                        "display_name":  f"{country_tr} - {lname}",
+                        "country":       country_tr,
+                        "country_code":  country_term,
+                    })
+
+    out.sort(key=lambda x: (x["sport_name_tr"] or "", x["country"] or "", x["display_name"] or ""))
+
+    with _leagues_cache_lock:
+        _all_sports_cache[brand] = (now, out)
+    _write_sports_file_cache(brand, out)
+    return out
+
 
 def kambi_list_football_leagues(brand):
     """Walk Kambi's group tree and return every football league term with a
@@ -1062,32 +1273,58 @@ FALLBACK_OPERATOR = "Unibet.nl"
 
 # ---------- Match discovery ----------
 
-# Kambi league_terms — slash-separated for country-scoped leagues.
-# If a term turns out to be wrong for a brand, the league just shows empty;
-# tweak here.
+# Kambi league entries — each item is a dict (sport_term, display_name,
+# league_term) so we can handle multiple sports without ambiguity. If a term
+# turns out to be wrong for a brand, the league just shows empty; tweak here.
 COMPETITIONS = [
-    ("Uluslararası - Champions League",  "champions_league"),
-    ("Uluslararası - Europa League",     "europa_league"),
-    ("İngiltere - Premier League",       "england/premier_league"),
-    ("Türkiye - Süper Lig",              "turkey/super_lig"),
-    ("Türkiye - 1. Lig",                 "turkey/1__lig"),
+    {"sport_term": "football", "display_name": "Uluslararası - Champions League",  "league_term": "champions_league"},
+    {"sport_term": "football", "display_name": "Uluslararası - Europa League",     "league_term": "europa_league"},
+    {"sport_term": "football", "display_name": "İngiltere - Premier League",       "league_term": "england/premier_league"},
+    {"sport_term": "football", "display_name": "Türkiye - Süper Lig",              "league_term": "turkey/super_lig"},
+    {"sport_term": "football", "display_name": "Türkiye - 1. Lig",                 "league_term": "turkey/1__lig"},
 ]
 
-def discover_matches(competitions=None):
-    """List upcoming fixtures across the given competitions (or DEFAULT_COMPETITIONS
-    if None — for backwards compat). Reference brand (711) first; if a league
-    returns nothing, fall back to Unibet.
 
-    `competitions` is a list of (display_name, league_term) tuples — same shape
-    as the COMPETITIONS module-level constant."""
+def _normalize_competition(c):
+    """Accept either the new dict shape or the legacy (name, term) tuple shape
+    (from older saved settings). Always returns a dict — sport_term defaults
+    to 'football' for legacy entries."""
+    if isinstance(c, dict):
+        return {
+            "sport_term":   (c.get("sport_term") or "football").lower(),
+            "display_name": c.get("display_name") or c.get("league_term") or "",
+            "league_term":  c.get("league_term") or "",
+        }
+    if isinstance(c, (list, tuple)) and len(c) >= 2:
+        return {
+            "sport_term":   "football",
+            "display_name": c[0],
+            "league_term":  c[1],
+        }
+    return None
+
+
+def discover_matches(competitions=None):
+    """List upcoming fixtures across the given competitions (defaults to
+    COMPETITIONS). Reference brand (711) first; if a league returns nothing,
+    fall back to Unibet.
+
+    `competitions` is a list of dicts {sport_term, display_name, league_term}.
+    Legacy 2-tuples (name, term) are accepted and treated as football."""
     if competitions is None:
         competitions = COMPETITIONS
     out = []
     seen_ids = set()
-    for comp_name, term in competitions:
-        events = kambi_listview(KAMBI_BRANDS[REFERENCE_OPERATOR], term)
+    for raw in competitions:
+        c = _normalize_competition(raw)
+        if not c or not c["league_term"]:
+            continue
+        sport_term  = c["sport_term"]
+        comp_name   = c["display_name"]
+        term        = c["league_term"]
+        events = kambi_listview(KAMBI_BRANDS[REFERENCE_OPERATOR], term, sport_term)
         if not events:
-            events = kambi_listview(KAMBI_BRANDS[FALLBACK_OPERATOR], term)
+            events = kambi_listview(KAMBI_BRANDS[FALLBACK_OPERATOR], term, sport_term)
         for ev in events:
             event = ev.get("event", {})
             state = event.get("state")
@@ -1098,6 +1335,7 @@ def discover_matches(competitions=None):
                 continue
             seen_ids.add(kid)
             out.append({
+                "sport":           sport_term,
                 "competition":     comp_name,
                 "league_term":     term,
                 "home":            event.get("homeName") or "",
@@ -1159,16 +1397,27 @@ def _align_tonybet_inferred_lines(rows):
 
 def fetch_all_for_match(match):
     """Run every operator's fetcher for one match. Returns list of odds rows
-    annotated with operator + license."""
+    annotated with operator + license. For non-football matches we only run
+    Kambi brands (711 + Unibet) — TOTO/TonyBet scrapers are football-shaped
+    and would burn cycles producing nothing useful."""
+    sport = (match.get("sport") or "football").lower()
+    is_football = sport == "football"
+
     rows = []
     for name, lic, fn, _ref in OPERATORS:
+        # Stage 1 of multi-sport: skip non-Kambi operators for non-football
+        # matches. (TOTO + TonyBet football-only until Stage 3 wires per-sport
+        # parsers.) Kambi covers every sport via the same betoffer/event API.
+        if not is_football and name not in KAMBI_BRANDS:
+            continue
         try:
             opr = fn(operator=name,
                      kambi_event_id=match.get("kambi_event_id"),
                      home=match.get("home"),
                      away=match.get("away"),
                      kickoff_utc_iso=match.get("kickoff_utc_iso"),
-                     league_term=match.get("league_term"))
+                     league_term=match.get("league_term"),
+                     sport=sport)
         except Exception as e:
             opr = [{"market_key": "MATCH_RESULT_FT", "market_label": "Maç Sonucu",
                     "selection_key": "1", "selection_label": "1",

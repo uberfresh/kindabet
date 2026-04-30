@@ -62,18 +62,17 @@ def _enabled_competitions():
     """Resolve the list of competitions to scan from the settings table.
     Falls back to the hardcoded defaults when no setting is stored.
 
-    Display names are RE-RESOLVED from the current Kambi taxonomy so
-    legacy saved settings (e.g. plain "Ligue 1") get the new
-    Turkish-prefixed names ("Fransa - Ligue 1") transparently — no
-    user re-save required."""
+    Display names AND sport_term are RE-RESOLVED from the current Kambi
+    taxonomy so legacy saved settings (which lacked sport_term) get the
+    correct sport classification automatically."""
     saved = db.get_setting("enabled_leagues")
     if not saved or not isinstance(saved, list) or not saved:
-        return scrapers.COMPETITIONS
+        return list(scrapers.COMPETITIONS)
 
     try:
-        leagues = scrapers.kambi_list_football_leagues(
+        all_leagues = scrapers.kambi_list_all_sports(
             scrapers.KAMBI_BRANDS[scrapers.REFERENCE_OPERATOR])
-        by_term = {lg["league_term"]: lg["display_name"] for lg in leagues}
+        by_term = {lg["league_term"]: lg for lg in all_leagues}
     except Exception:
         by_term = {}
 
@@ -84,13 +83,19 @@ def _enabled_competitions():
         term = item.get("league_term")
         if not term:
             continue
-        name = by_term.get(term) or item.get("display_name") or term
-        out.append((name, term))
+        meta = by_term.get(term) or {}
+        name = meta.get("display_name") or item.get("display_name") or term
+        sport = (item.get("sport_term") or meta.get("sport_term") or "football").lower()
+        out.append({
+            "sport_term":   sport,
+            "display_name": name,
+            "league_term":  term,
+        })
     return out
 
 
 def _enabled_league_terms():
-    return [t for _, t in _enabled_competitions()]
+    return [c["league_term"] for c in _enabled_competitions()]
 
 
 def _bulk_refresh_worker():
@@ -112,6 +117,7 @@ def _bulk_refresh_worker():
     futures = {}
     for m in matches:
         match_dict = {
+            "sport":           m.get("sport") or "football",
             "competition":     m["competition"],
             "league_term":     m["league_term"],
             "home":            m["home"],
@@ -183,7 +189,7 @@ def api_matches():
         m["logo_url"]        = scrapers.league_logo_url(m.get("league_term"))
         grouped[m["competition"]].append(m)
     # Preserve our preferred competition order from scrapers.COMPETITIONS
-    order = [name for name, _term in scrapers.COMPETITIONS]
+    order = [c["display_name"] for c in scrapers.COMPETITIONS]
     leagues = []
     for comp in order:
         if comp in grouped:
@@ -430,6 +436,7 @@ def api_refresh(match_id):
     if not m:
         return jsonify({"error": "not found"}), 404
     match_dict = {
+        "sport":           m.get("sport") or "football",
         "competition":     m["competition"],
         "league_term":     m["league_term"],
         "home":            m["home"],
@@ -467,14 +474,19 @@ def api_refresh(match_id):
 
 @app.route("/api/leagues/available")
 def api_leagues_available():
-    """Discover all football leagues Kambi exposes for our reference brand,
-    enriched with TheSportsDB badge URLs where available. Logo lookups are
-    cached in-process for the lifetime of the gunicorn worker."""
-    leagues = scrapers.kambi_list_football_leagues(scrapers.KAMBI_BRANDS[scrapers.REFERENCE_OPERATOR])
+    """Discover every (sport, league) tuple Kambi exposes for our reference
+    brand, enriched with TheSportsDB badge URLs for football leagues (other
+    sports get null). Cached in-memory + on-disk, see scrapers.py."""
+    brand_ref = scrapers.KAMBI_BRANDS[scrapers.REFERENCE_OPERATOR]
+    leagues = scrapers.kambi_list_all_sports(brand_ref)
     if not leagues:
-        leagues = scrapers.kambi_list_football_leagues(scrapers.KAMBI_BRANDS[scrapers.FALLBACK_OPERATOR])
+        leagues = scrapers.kambi_list_all_sports(scrapers.KAMBI_BRANDS[scrapers.FALLBACK_OPERATOR])
+    # Logo enrichment is football-only (TheSportsDB is soccer-focused).
     for lg in leagues:
-        lg["logo_url"] = scrapers.league_logo_url(lg.get("league_term"))
+        if lg.get("sport_term") == "football":
+            lg["logo_url"] = scrapers.league_logo_url(lg.get("league_term"))
+        else:
+            lg["logo_url"] = None
     return jsonify({"leagues": leagues})
 
 
@@ -482,14 +494,15 @@ def api_leagues_available():
 def api_settings_leagues_get():
     saved = db.get_setting("enabled_leagues")
     if not saved or not isinstance(saved, list) or not saved:
-        saved = [{"display_name": n, "league_term": t} for n, t in scrapers.COMPETITIONS]
-    # Always re-resolve display_names from current taxonomy so the UI shows
-    # the latest Turkish-prefixed names regardless of when the setting
-    # was first written.
+        saved = [{"sport_term": c["sport_term"], "display_name": c["display_name"],
+                  "league_term": c["league_term"]} for c in scrapers.COMPETITIONS]
+    # Always re-resolve display_names + sport_term from current taxonomy so
+    # the UI shows the latest names regardless of when the setting was first
+    # written. Legacy entries lack sport_term — we backfill from the lookup.
     try:
-        leagues = scrapers.kambi_list_football_leagues(
+        all_leagues = scrapers.kambi_list_all_sports(
             scrapers.KAMBI_BRANDS[scrapers.REFERENCE_OPERATOR])
-        by_term = {lg["league_term"]: lg["display_name"] for lg in leagues}
+        by_term = {lg["league_term"]: lg for lg in all_leagues}
     except Exception:
         by_term = {}
     enriched = []
@@ -497,27 +510,29 @@ def api_settings_leagues_get():
         term = (item or {}).get("league_term")
         if not term:
             continue
+        meta = by_term.get(term) or {}
         enriched.append({
-            "league_term":  term,
-            "display_name": by_term.get(term) or item.get("display_name") or term,
+            "sport_term":    (item.get("sport_term") or meta.get("sport_term") or "football").lower(),
+            "league_term":   term,
+            "display_name":  meta.get("display_name") or item.get("display_name") or term,
         })
     return jsonify({"enabled": enriched})
 
 
 @app.route("/api/settings/leagues", methods=["POST"])
 def api_settings_leagues_set():
-    """Persist the user's selected leagues. Body: {"enabled": [{display_name, league_term}, ...]}.
+    """Persist the user's selected leagues. Body: {"enabled": [{sport_term, display_name, league_term}, ...]}.
     Accepts an empty list (clears all leagues — site shows "no matches")."""
     body = request.get_json(silent=True) or {}
     enabled = body.get("enabled")
     if not isinstance(enabled, list):
         return jsonify({"error": "enabled must be a list"}), 400
-    # Re-resolve display_names from current Kambi data on save, so even if
-    # the client sent a stale name, what we store is canonical.
+    # Re-resolve display_names + sport_term from current Kambi data on save,
+    # so even if the client sent a stale name, what we store is canonical.
     try:
-        leagues = scrapers.kambi_list_football_leagues(
+        all_leagues = scrapers.kambi_list_all_sports(
             scrapers.KAMBI_BRANDS[scrapers.REFERENCE_OPERATOR])
-        by_term = {lg["league_term"]: lg["display_name"] for lg in leagues}
+        by_term = {lg["league_term"]: lg for lg in all_leagues}
     except Exception:
         by_term = {}
     cleaned = []
@@ -529,8 +544,10 @@ def api_settings_leagues_set():
         if not term or term in seen_terms:
             continue
         seen_terms.add(term)
-        name = by_term.get(term) or (item.get("display_name") or "").strip() or term
-        cleaned.append({"display_name": name, "league_term": term})
+        meta = by_term.get(term) or {}
+        sport = (item.get("sport_term") or meta.get("sport_term") or "football").lower()
+        name = meta.get("display_name") or (item.get("display_name") or "").strip() or term
+        cleaned.append({"sport_term": sport, "display_name": name, "league_term": term})
     db.set_setting("enabled_leagues", cleaned)
     # Removed leagues should drop out of /firsatlar instantly — recompute the
     # diffs cache against the new enabled-leagues filter (cheap; ~latest_odds

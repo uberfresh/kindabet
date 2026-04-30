@@ -41,6 +41,7 @@ export type OverUnderOdds = {
 
 export type MatchSummary = {
   id: number;
+  sport?: string;              // "football" | "basketball" | … (optional for legacy responses)
   competition: string;
   league_term: string;
   home: string;
@@ -161,15 +162,26 @@ export function fetchBiggestDiffs(limit = 10): Promise<BiggestDiffsResponse> {
 // ---------- Settings: leagues ----------
 
 export type LeagueOption = {
+  // Multi-sport metadata. Football leagues all share sport_term="football";
+  // basketball, tennis, etc. expose their own. Legacy clients can ignore these
+  // fields and treat any league as football.
+  sport_term: string;
+  sport_name_tr: string;
+  sport_name_en?: string;
   league_term: string;
   display_name: string;
   country: string | null;
+  country_code?: string | null;
   logo_url?: string | null;
 };
 
 export type AvailableLeaguesResponse = { leagues: LeagueOption[] };
 
-export type EnabledLeague = { display_name: string; league_term: string };
+export type EnabledLeague = {
+  sport_term?: string;          // Optional during transition; backend defaults to "football"
+  display_name: string;
+  league_term: string;
+};
 export type EnabledLeaguesResponse = { enabled: EnabledLeague[] };
 
 export function fetchAvailableLeagues(): Promise<AvailableLeaguesResponse> {

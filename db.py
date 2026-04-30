@@ -21,6 +21,7 @@ _lock = threading.Lock()
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS matches (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sport TEXT NOT NULL DEFAULT 'football',
     competition TEXT NOT NULL,
     league_term TEXT NOT NULL,
     home TEXT NOT NULL,
@@ -31,6 +32,7 @@ CREATE TABLE IF NOT EXISTS matches (
 );
 CREATE INDEX IF NOT EXISTS idx_matches_kickoff ON matches(kickoff_utc);
 CREATE INDEX IF NOT EXISTS idx_matches_comp ON matches(competition);
+CREATE INDEX IF NOT EXISTS idx_matches_sport ON matches(sport);
 
 CREATE TABLE IF NOT EXISTS odds_snapshots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -87,11 +89,17 @@ def init():
             c.execute("UPDATE odds_snapshots SET is_active = 0")
         if "last_seen_at" not in cols:
             c.execute("ALTER TABLE odds_snapshots ADD COLUMN last_seen_at TEXT")
+        # Multi-sport: every legacy match was football, so backfill the column.
+        match_cols = {r[1] for r in c.execute("PRAGMA table_info(matches)").fetchall()}
+        if "sport" not in match_cols:
+            c.execute("ALTER TABLE matches ADD COLUMN sport TEXT NOT NULL DEFAULT 'football'")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_matches_sport ON matches(sport)")
         # Indexes that depend on the migrated columns — safe to run last.
         c.executescript(SCHEMA_POST_MIGRATION)
         c.commit()
 
 def upsert_match(m):
+    sport = (m.get("sport") or "football").lower()
     with _lock, conn() as c:
         cur = c.cursor()
         cur.execute("SELECT id FROM matches WHERE kambi_event_id = ?",
@@ -99,14 +107,14 @@ def upsert_match(m):
         row = cur.fetchone()
         if row:
             mid = row["id"]
-            cur.execute("UPDATE matches SET competition=?, league_term=?, home=?, away=?, kickoff_utc=? WHERE id=?",
-                        (m["competition"], m["league_term"], m["home"], m["away"],
+            cur.execute("UPDATE matches SET sport=?, competition=?, league_term=?, home=?, away=?, kickoff_utc=? WHERE id=?",
+                        (sport, m["competition"], m["league_term"], m["home"], m["away"],
                          m["kickoff_utc_iso"], mid))
         else:
             cur.execute(
-                "INSERT INTO matches (competition, league_term, home, away, kickoff_utc, kambi_event_id) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (m["competition"], m["league_term"], m["home"], m["away"],
+                "INSERT INTO matches (sport, competition, league_term, home, away, kickoff_utc, kambi_event_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (sport, m["competition"], m["league_term"], m["home"], m["away"],
                  m["kickoff_utc_iso"], m["kambi_event_id"]))
             mid = cur.lastrowid
         c.commit()
@@ -136,9 +144,10 @@ def set_setting(key, value):
         c.commit()
 
 
-def list_matches(only_upcoming=True, league_terms=None):
+def list_matches(only_upcoming=True, league_terms=None, sport=None):
     """Filter by league_terms list when provided so disabled leagues drop
-    out of the live view (matches stay in DB; just hidden)."""
+    out of the live view (matches stay in DB; just hidden). Optional sport
+    filter restricts to one sport_term (e.g. 'football')."""
     with _lock, conn() as c:
         where = []
         params = []
@@ -147,10 +156,13 @@ def list_matches(only_upcoming=True, league_terms=None):
         if league_terms:
             where.append(f"league_term IN ({','.join('?' * len(league_terms))})")
             params.extend(league_terms)
+        if sport:
+            where.append("sport = ?")
+            params.append(sport)
         sql = "SELECT * FROM matches"
         if where:
             sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY competition, kickoff_utc"
+        sql += " ORDER BY sport, competition, kickoff_utc"
         rows = c.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
