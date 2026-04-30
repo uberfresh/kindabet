@@ -8,6 +8,11 @@ import {
   type LeagueOption,
   type RefreshAllStatus,
 } from "../api";
+
+// startRefreshAll is still imported because onSave kicks one off after saving,
+// but the user can also trigger an unconditional rescan from the topbar's
+// "Hepsini Yenile" button — so a duplicate "Maç Oranlarını Tara" button in
+// this page would just be confusing.
 import { fmtRelative, sportEmoji } from "../format";
 import { Topbar } from "../components/Topbar";
 import { RefreshModal } from "../components/RefreshModal";
@@ -70,7 +75,6 @@ export default function SettingsPage() {
   const [selected, setSelected]   = useState<Set<string>>(new Set());  // composite keys
   const [error, setError]         = useState<string | null>(null);
   const [saving, setSaving]       = useState(false);
-  const [scanning, setScanning]   = useState(false);
   const [refreshingCatalog, setRefreshingCatalog] = useState(false);
   const [catalogFlash, setCatalogFlash] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
@@ -285,19 +289,6 @@ export default function SettingsPage() {
       setError((e as Error).message);
     } finally {
       setSaving(false);
-    }
-  };
-
-  const onScanAll = async () => {
-    setScanning(true);
-    try {
-      const s = await startRefreshAll();
-      setScanStatus(s);
-      setModalOpen(true);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setScanning(false);
     }
   };
 
@@ -520,17 +511,9 @@ export default function SettingsPage() {
             className="btn ghost"
             onClick={onRefreshCatalog}
             disabled={refreshingCatalog}
-            title="Kambi'den lig kataloğunu yeniden çek (yeni eklenen ligleri göstermek için)"
+            title="Kambi'den lig kataloğunu yeniden çek (yeni eklenen ligleri göstermek için). Oranlar yenilenmez."
           >
             {refreshingCatalog ? "Yenileniyor…" : "🗂 Sport Kategorilerini Yenile"}
-          </button>
-          <button
-            className="btn ghost"
-            onClick={onScanAll}
-            disabled={scanning || scanStatus?.running || !available}
-            title="Halihazırda seçili ligler için tüm operatörlerden oranları yeniden çek"
-          >
-            {scanning || scanStatus?.running ? "Taranıyor…" : "↻ Maç Oranlarını Tara"}
           </button>
           <button
             className="btn"
