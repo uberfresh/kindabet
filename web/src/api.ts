@@ -117,12 +117,23 @@ export type RefreshAllStatus = {
   completed: number;
   failed: number;
   error: string | null;
+  scope?: string | null;             // "all" | "sport:<term>" | "discovery" | null
   auto_refresh_interval_seconds?: number;
   next_scheduled_at?: string | null;
 };
 
 export function startRefreshAll(): Promise<RefreshAllStatus & { ok: boolean; already_running: boolean }> {
   return api(`/api/refresh_all`, { method: "POST" });
+}
+
+export function startRefreshSport(sportTerm: string): Promise<RefreshAllStatus & { ok: boolean; already_running: boolean }> {
+  return api(`/api/refresh_sport/${encodeURIComponent(sportTerm)}`, { method: "POST" });
+}
+
+export type DiscoveryRefreshResponse = { ok: boolean; discovered: number; error: string | null };
+
+export function startRefreshDiscovery(): Promise<DiscoveryRefreshResponse> {
+  return api(`/api/refresh_discovery`, { method: "POST" });
 }
 
 export function getRefreshAllStatus(): Promise<RefreshAllStatus> {

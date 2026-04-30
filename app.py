@@ -53,6 +53,7 @@ _refresh_all_job = {
     "completed": 0,
     "failed": 0,
     "error": None,
+    "scope": None,   # "all" | "discovery" | "sport:<term>" | None
 }
 
 def _utc_now_str():
@@ -98,21 +99,49 @@ def _enabled_league_terms():
     return [c["league_term"] for c in _enabled_competitions()]
 
 
-def _bulk_refresh_worker():
-    """Coordinator thread: discover matches first, then submit each to the
-    pool and update progress as futures complete."""
+def _scrape_discovery():
+    """Run match discovery against currently-enabled competitions and persist
+    new fixtures. Returns {"discovered": int, "error": str|None}. Fast (~1-2s
+    with cache); safe to call synchronously from a request handler."""
     try:
-        for m in scrapers.discover_matches(_enabled_competitions()):
-            db.upsert_match(m)
+        matches = scrapers.discover_matches(_enabled_competitions())
     except Exception as e:
-        with _refresh_all_lock:
-            _refresh_all_job["error"] = f"discover failed: {e}"
+        return {"discovered": 0, "error": f"discover failed: {e}"}
+    n = 0
+    for m in matches:
+        try:
+            db.upsert_match(m)
+            n += 1
+        except Exception:
+            pass
+    return {"discovered": n, "error": None}
 
-    matches = db.list_matches(only_upcoming=True, league_terms=_enabled_league_terms())
+
+def _refresh_sweep_worker(sport=None, discover=True, scope_label=None):
+    """Coordinator thread: optionally re-discover, then refresh odds for every
+    upcoming match (optionally restricted to one sport). Updates the shared
+    job state so /api/refresh_all/status can serve any scope.
+
+    Args:
+        sport: restrict to one sport_term (e.g. 'football'), or None for all.
+        discover: run discovery first (skip when caller already did it).
+        scope_label: human-readable scope tag (e.g. "sport:basketball")."""
+    if discover:
+        res = _scrape_discovery()
+        if res.get("error"):
+            with _refresh_all_lock:
+                _refresh_all_job["error"] = res["error"]
+
+    matches = db.list_matches(
+        only_upcoming=True,
+        league_terms=_enabled_league_terms(),
+        sport=sport,
+    )
     with _refresh_all_lock:
         _refresh_all_job["total"] = len(matches)
         _refresh_all_job["completed"] = 0
         _refresh_all_job["failed"] = 0
+        _refresh_all_job["scope"] = scope_label or ("all" if sport is None else f"sport:{sport}")
 
     futures = {}
     for m in matches:
@@ -148,7 +177,12 @@ def _bulk_refresh_worker():
     except Exception as e:
         # Don't let a cache rebuild failure crash the worker; the next refresh
         # (or a cold-start GET) will recover.
-        print(f"[bulk-refresh] diff cache rebuild failed: {e}", flush=True)
+        print(f"[refresh-sweep] diff cache rebuild failed: {e}", flush=True)
+
+
+def _bulk_refresh_worker():
+    """Backwards-compat alias for the systemd timer — full sweep, all sports."""
+    _refresh_sweep_worker(sport=None, discover=True, scope_label="all")
 
 
 # ---------- pages ----------
@@ -677,13 +711,13 @@ def api_biggest_diffs():
 
 # ---------- bulk refresh ----------
 
-@app.route("/api/refresh_all", methods=["POST"])
-def api_refresh_all():
-    """Kick off a background job that re-discovers matches and refreshes odds
-    for every match. Returns immediately; clients should poll /status."""
+def _start_sweep_job(sport, scope_label):
+    """Atomically claim the job slot and spawn a coordinator thread. Returns
+    (started: bool, snapshot: dict). If a job is already running, returns
+    (False, snapshot) so the caller can surface 'already_running'."""
     with _refresh_all_lock:
         if _refresh_all_job["running"]:
-            return jsonify({"ok": True, "already_running": True, **_refresh_all_job})
+            return False, dict(_refresh_all_job)
         _refresh_all_job.update({
             "running":     True,
             "started_at":  _utc_now_str(),
@@ -692,10 +726,48 @@ def api_refresh_all():
             "completed":   0,
             "failed":      0,
             "error":       None,
+            "scope":       scope_label,
         })
-    threading.Thread(target=_bulk_refresh_worker, name="bulk-refresh", daemon=True).start()
-    with _refresh_all_lock:
-        return jsonify({"ok": True, "already_running": False, **_refresh_all_job})
+        snapshot = dict(_refresh_all_job)
+    threading.Thread(
+        target=_refresh_sweep_worker,
+        kwargs={"sport": sport, "discover": True, "scope_label": scope_label},
+        name=f"sweep-{scope_label}",
+        daemon=True,
+    ).start()
+    return True, snapshot
+
+
+@app.route("/api/refresh_all", methods=["POST"])
+def api_refresh_all():
+    """Kick off a background job that re-discovers matches and refreshes odds
+    for every match across every enabled sport. Returns immediately; clients
+    poll /api/refresh_all/status."""
+    started, snap = _start_sweep_job(sport=None, scope_label="all")
+    return jsonify({"ok": True, "already_running": not started, **snap})
+
+
+@app.route("/api/refresh_sport/<sport_term>", methods=["POST"])
+def api_refresh_sport(sport_term):
+    """Refresh odds for every enabled match in one sport. Cheaper than
+    /api/refresh_all when only one sport's data is stale (e.g. user just
+    enabled basketball and wants to see odds without waiting for football).
+    Async; clients poll /api/refresh_all/status."""
+    sport = (sport_term or "").lower().strip()
+    if not sport:
+        return jsonify({"error": "sport_term required"}), 400
+    started, snap = _start_sweep_job(sport=sport, scope_label=f"sport:{sport}")
+    return jsonify({"ok": True, "already_running": not started, **snap})
+
+
+@app.route("/api/refresh_discovery", methods=["POST"])
+def api_refresh_discovery():
+    """Re-discover matches (no odds refresh). Synchronous (~1-2s with the
+    sport-tree cache warm); useful when the user just enabled new leagues
+    in Ayarlar and wants the new fixtures to appear immediately without
+    waiting for a full sweep."""
+    res = _scrape_discovery()
+    return jsonify({"ok": res.get("error") is None, **res})
 
 
 @app.route("/api/refresh_all/status")
