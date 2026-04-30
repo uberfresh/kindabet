@@ -32,7 +32,10 @@ CREATE TABLE IF NOT EXISTS matches (
 );
 CREATE INDEX IF NOT EXISTS idx_matches_kickoff ON matches(kickoff_utc);
 CREATE INDEX IF NOT EXISTS idx_matches_comp ON matches(competition);
-CREATE INDEX IF NOT EXISTS idx_matches_sport ON matches(sport);
+-- idx_matches_sport is created in SCHEMA_POST_MIGRATION because on legacy
+-- DBs the matches table exists without the `sport` column until the
+-- ALTER TABLE in init() runs. SQLite's CREATE INDEX IF NOT EXISTS still
+-- errors if the referenced column is missing, so we delay this one.
 
 CREATE TABLE IF NOT EXISTS odds_snapshots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,6 +70,7 @@ CREATE TABLE IF NOT EXISTS settings (
 SCHEMA_POST_MIGRATION = """
 CREATE INDEX IF NOT EXISTS idx_os_active          ON odds_snapshots(match_id, is_active, ok);
 CREATE INDEX IF NOT EXISTS idx_os_history_lookup  ON odds_snapshots(match_id, operator, market_key, selection_key, taken_at);
+CREATE INDEX IF NOT EXISTS idx_matches_sport      ON matches(sport);
 """
 
 def conn():
@@ -90,10 +94,10 @@ def init():
         if "last_seen_at" not in cols:
             c.execute("ALTER TABLE odds_snapshots ADD COLUMN last_seen_at TEXT")
         # Multi-sport: every legacy match was football, so backfill the column.
+        # The matching index is created in SCHEMA_POST_MIGRATION below.
         match_cols = {r[1] for r in c.execute("PRAGMA table_info(matches)").fetchall()}
         if "sport" not in match_cols:
             c.execute("ALTER TABLE matches ADD COLUMN sport TEXT NOT NULL DEFAULT 'football'")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_matches_sport ON matches(sport)")
         # Indexes that depend on the migrated columns — safe to run last.
         c.executescript(SCHEMA_POST_MIGRATION)
         c.commit()
