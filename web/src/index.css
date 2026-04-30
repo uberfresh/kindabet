@@ -918,7 +918,10 @@ main {
   align-items: center;
   gap: 8px;
   margin-left: auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
+.settings-actionbar .btn { white-space: nowrap; }
 .saved-flash {
   animation: fade-out 2.5s ease-out forwards;
   font-weight: 600;
@@ -1910,7 +1913,8 @@ main {
   .settings-title-row { gap: 10px; }
   .settings-master { margin-left: 0; font-size: 13.5px; }
 
-  /* Bottom action bar: stack search above buttons so neither cramps. */
+  /* Bottom action bar: stack search above buttons. With three buttons
+     we let them wrap to two rows if the screen is too narrow. */
   .settings-actionbar {
     flex-direction: column;
     align-items: stretch;
@@ -1919,10 +1923,15 @@ main {
   }
   .settings-actionbar-buttons {
     margin-left: 0;
-    justify-content: flex-end;
+    justify-content: stretch;
   }
-  .settings-actionbar-buttons .btn { padding: 8px 12px; font-size: 13px; }
-  .settings-page { padding-bottom: 130px; }   /* taller stacked bar */
+  .settings-actionbar-buttons .btn {
+    padding: 8px 10px;
+    font-size: 12.5px;
+    flex: 1 1 auto;
+  }
+  /* Page padding accounts for the worst-case 2-row button stack. */
+  .settings-page { padding-bottom: 170px; }
 
   .topnav { margin-left: 0; gap: 2px; }
   .topnav-link { padding: 6px 10px; font-size: 12.5px; }

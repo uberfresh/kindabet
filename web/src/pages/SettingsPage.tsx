@@ -71,6 +71,8 @@ export default function SettingsPage() {
   const [error, setError]         = useState<string | null>(null);
   const [saving, setSaving]       = useState(false);
   const [scanning, setScanning]   = useState(false);
+  const [refreshingCatalog, setRefreshingCatalog] = useState(false);
+  const [catalogFlash, setCatalogFlash] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false);
   const [expanded, setExpanded]   = useState<Set<string>>(new Set());
@@ -299,6 +301,34 @@ export default function SettingsPage() {
     }
   };
 
+  const onRefreshCatalog = async () => {
+    // Force-refetch /api/leagues/available — busts both the localStorage
+    // cache here and the in-memory + on-disk caches in scrapers.py. Useful
+    // when Kambi adds a new league upstream and the user wants to see it
+    // without waiting for the TTL to expire.
+    setRefreshingCatalog(true);
+    setCatalogFlash(null);
+    try {
+      try { localStorage.removeItem(CACHE_KEY); } catch {}
+      const before = available?.length ?? 0;
+      const avail = await fetchAvailableLeagues(true);
+      setAvailable(avail.leagues);
+      writeCachedAvailable(avail.leagues);
+      const after = avail.leagues.length;
+      const delta = after - before;
+      setCatalogFlash(
+        delta > 0
+          ? `${after} lig (+${delta} yeni)`
+          : `${after} lig — değişiklik yok`
+      );
+      window.setTimeout(() => setCatalogFlash(null), 4000);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setRefreshingCatalog(false);
+    }
+  };
+
   const totalSelected = selected.size;
   const totalAvailable = available?.length ?? 0;
   const allSelected = totalAvailable > 0 && totalSelected === totalAvailable;
@@ -471,9 +501,9 @@ export default function SettingsPage() {
         )}
       </main>
 
-      {/* Sticky bottom action bar — search + save + scan-all. Mobile-first
-          surface so the user can always trigger a scan or save without
-          scrolling back to the top. */}
+      {/* Sticky bottom action bar — three distinct actions, ordered by
+          frequency (rarest left, primary right). Mobile-first surface so
+          the user can always trigger any action without scrolling. */}
       <div className="settings-actionbar">
         <input
           className="settings-search"
@@ -484,22 +514,31 @@ export default function SettingsPage() {
           aria-label="Lig ara"
         />
         <div className="settings-actionbar-buttons">
+          {catalogFlash && <span className="muted small saved-flash">{catalogFlash}</span>}
           {savedFlash && <span className="muted small saved-flash">Kaydedildi ✓</span>}
+          <button
+            className="btn ghost"
+            onClick={onRefreshCatalog}
+            disabled={refreshingCatalog}
+            title="Kambi'den lig kataloğunu yeniden çek (yeni eklenen ligleri göstermek için)"
+          >
+            {refreshingCatalog ? "Yenileniyor…" : "🗂 Sport Kategorilerini Yenile"}
+          </button>
           <button
             className="btn ghost"
             onClick={onScanAll}
             disabled={scanning || scanStatus?.running || !available}
-            title="Şu anda etkin olan tüm ligleri yeniden tara"
+            title="Halihazırda seçili ligler için tüm operatörlerden oranları yeniden çek"
           >
-            {scanning || scanStatus?.running ? "Taranıyor…" : "↻ Hepsini Tara"}
+            {scanning || scanStatus?.running ? "Taranıyor…" : "↻ Maç Oranlarını Tara"}
           </button>
           <button
             className="btn"
             onClick={onSave}
             disabled={saving || !available}
-            title="Seçimi kaydet ve hemen taramaya başla"
+            title="Yaptığın değişiklikleri kaydet ve yeni seçimle birlikte taramayı başlat"
           >
-            {saving ? "Kaydediliyor…" : "Kaydet ve Tara"}
+            {saving ? "Kaydediliyor…" : "💾 Kaydet ve Tara"}
           </button>
         </div>
       </div>

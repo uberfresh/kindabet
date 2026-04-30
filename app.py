@@ -596,8 +596,14 @@ def api_refresh(match_id):
 def api_leagues_available():
     """Discover every (sport, league) tuple Kambi exposes for our reference
     brand, enriched with TheSportsDB badge URLs for football leagues (other
-    sports get null). Cached in-memory + on-disk, see scrapers.py."""
+    sports get null). Cached in-memory + on-disk, see scrapers.py.
+
+    `?force=1` invalidates both caches before re-walking — surfaced via the
+    Ayarlar "Sport Kategorilerini Yenile" button so users can pick up newly
+    added Kambi leagues without waiting for the 30min/24h TTLs."""
     brand_ref = scrapers.KAMBI_BRANDS[scrapers.REFERENCE_OPERATOR]
+    if request.args.get("force") == "1":
+        scrapers.kambi_invalidate_sports_cache()
     leagues = scrapers.kambi_list_all_sports(brand_ref)
     if not leagues:
         leagues = scrapers.kambi_list_all_sports(scrapers.KAMBI_BRANDS[scrapers.FALLBACK_OPERATOR])

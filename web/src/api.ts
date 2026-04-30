@@ -228,8 +228,10 @@ export type EnabledLeague = {
 };
 export type EnabledLeaguesResponse = { enabled: EnabledLeague[] };
 
-export function fetchAvailableLeagues(): Promise<AvailableLeaguesResponse> {
-  return api<AvailableLeaguesResponse>(`/api/leagues/available`);
+export function fetchAvailableLeagues(force = false): Promise<AvailableLeaguesResponse> {
+  return api<AvailableLeaguesResponse>(
+    `/api/leagues/available${force ? "?force=1" : ""}`
+  );
 }
 
 export function fetchEnabledLeagues(): Promise<EnabledLeaguesResponse> {

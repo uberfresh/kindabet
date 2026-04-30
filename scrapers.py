@@ -440,6 +440,25 @@ def _write_sports_file_cache(brand, leagues):
         pass
 
 
+def kambi_invalidate_sports_cache(brand=None):
+    """Clear in-memory + on-disk sport-tree cache so the next
+    kambi_list_all_sports() call re-walks Kambi from scratch. Used by the
+    Ayarlar "Sport Kategorilerini Yenile" button when the user wants to
+    pick up newly-added leagues without waiting for the 30min/24h TTLs."""
+    import os
+    with _leagues_cache_lock:
+        if brand:
+            _all_sports_cache.pop(brand, None)
+        else:
+            _all_sports_cache.clear()
+    try:
+        p = _sports_cache_path()
+        if os.path.isfile(p):
+            os.remove(p)
+    except Exception:
+        pass
+
+
 def kambi_list_all_sports(brand):
     """Walk Kambi's full group tree and return every (sport, league) tuple
     with Turkish display labels. Returns a flat list — frontend groups by
