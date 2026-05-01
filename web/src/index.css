@@ -1505,12 +1505,11 @@ main {
   gap: 14px;
   align-items: flex-end;
 }
-/* Non-football: just a "click for detail" hint instead of football-shaped
-   1X2 + OU blocks (which would render empty for sports that don't expose
-   those markets). */
-.match-row-markets.non-football {
-  align-items: center;
-  justify-content: center;
+/* Inline placeholder shown in .match-row-markets when a match has no
+   primary-market odds yet (e.g. discovery has happened but odds haven't,
+   or the sport has no canonical "winner" market). */
+.match-row-detail-hint {
+  align-self: center;
   padding: 8px 14px;
   background: var(--cream-soft);
   border-radius: 8px;
@@ -1582,16 +1581,6 @@ main {
   align-self: center;
 }
 .match-row-count.empty { color: var(--muted); background: transparent; }
-
-/* "henüz oran yok" strip when no data yet — sits below the row, full width */
-.match-row-cold-strip {
-  grid-column: 1 / -1;
-  font-size: 11px;
-  color: var(--muted);
-  font-style: italic;
-  text-align: center;
-  margin-top: -3px;
-}
 
 /* ============================================================
    Search summary banner

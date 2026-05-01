@@ -24,8 +24,13 @@ export function MatchCard({ match, showLeaguePill = false }: Props) {
   const odds = match.headline_odds;
   const ou = match.over_under_2_5;
   const count = match.market_count ?? 0;
-  const isFootball = !match.sport || match.sport === "football";
-  const hasAnyOdd = !!(odds && (odds["1"] || odds.X || odds["2"]));
+  // Strict football detection: only treat as football when sport is explicitly
+  // "football". Anything else (UFC, basketball, …) — and any match where the
+  // sport tag is missing — drops the football-shaped 1X2/OU layout.
+  const isFootball = match.sport === "football";
+  // Three-way (1/X/2) header has the X selection; two-way (UFC, tennis, …) doesn't.
+  const isThreeWay = !!(odds && odds.X != null);
+  const hasAnyOdd  = !!(odds && (odds["1"] != null || odds.X != null || odds["2"] != null));
 
   return (
     <Link to={`/match/${match.id}`} className="card-link">
@@ -47,17 +52,28 @@ export function MatchCard({ match, showLeaguePill = false }: Props) {
           <span className="match-row-team away">{match.away}</span>
         </div>
 
-        {isFootball ? (
-          <div className="match-row-markets">
+        <div className="match-row-markets">
+          {hasAnyOdd ? (
             <div className="market-block">
-              <span className="market-block-head muted small">Maç Sonucu</span>
-              <div className="market-block-buttons cols-3">
+              <span className="market-block-head muted small">
+                {isThreeWay ? "Maç Sonucu" : "Kazanan"}
+              </span>
+              <div className={"market-block-buttons " + (isThreeWay ? "cols-3" : "cols-2")}>
                 <OddBtn label="1" value={odds?.["1"]} />
-                <OddBtn label="X" value={odds?.X} />
+                {isThreeWay && <OddBtn label="X" value={odds?.X} />}
                 <OddBtn label="2" value={odds?.["2"]} />
               </div>
             </div>
+          ) : (
+            <span className="match-row-detail-hint muted small">
+              {count > 0 ? "Detay için tıkla" : "Henüz oran yok"}
+            </span>
+          )}
 
+          {/* Football-only second block: Alt/Üst 2.5. Other sports' totals
+              are sport-specific (rounds, sets, points) — handled on the
+              detail page rather than the home card. */}
+          {isFootball && hasAnyOdd && (
             <div className="market-block">
               <span className="market-block-head muted small">Alt / Üst 2.5</span>
               <div className="market-block-buttons cols-2">
@@ -65,12 +81,8 @@ export function MatchCard({ match, showLeaguePill = false }: Props) {
                 <OddBtn label="Alt" value={ou?.UNDER} />
               </div>
             </div>
-          </div>
-        ) : (
-          <div className="match-row-markets non-football">
-            <span className="muted small">Detay için tıkla — {count} market mevcut</span>
-          </div>
-        )}
+          )}
+        </div>
 
         <span
           className={"match-row-count" + (count > 0 ? "" : " empty")}
@@ -78,10 +90,6 @@ export function MatchCard({ match, showLeaguePill = false }: Props) {
         >
           {count > 0 ? `+${count}` : "—"}
         </span>
-
-        {isFootball && !hasAnyOdd && (
-          <span className="match-row-cold-strip">henüz oran yok</span>
-        )}
       </article>
     </Link>
   );

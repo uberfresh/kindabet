@@ -62,7 +62,7 @@ export type Market = {
 
 export type HeadlineOdds = {
   "1"?: number;
-  X?: number;
+  X?: number;       // present for 3-way sports (football, handball); absent for 2-way (UFC, tennis, basketball)
   "2"?: number;
 };
 
@@ -84,6 +84,7 @@ export type MatchSummary = {
   discovered_at: string;
   last_refresh: string | null;
   headline_odds: HeadlineOdds | null;
+  headline_market?: string | null;     // canonical key of the primary market behind headline_odds (e.g. MATCH_RESULT_FT, MMA_BOUT_RESULT)
   over_under_2_5?: OverUnderOdds | null;
   market_count?: number;
   logo_url?: string | null;

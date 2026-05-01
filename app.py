@@ -223,6 +223,22 @@ def index():
 
 # ---------- API ----------
 
+# Per-sport primary "winner" market — the head-to-head row we put inline on
+# the home card. Football/handball are 3-way (1/X/2); UFC, tennis, basketball,
+# volleyball are 2-way (1/2). Sports without a clear primary fall back to None
+# and the home card just shows the market-count chip.
+_PRIMARY_MARKET_BY_SPORT = {
+    "football":         "MATCH_RESULT_FT",
+    "handball":         "HANDBALL_RESULT_FT",
+    "basketball":       "BASKETBALL_MONEYLINE",
+    "ufc_mma":          "MMA_BOUT_RESULT",
+    "tennis":           "MATCH_WINNER",
+    "volleyball":       "MATCH_WINNER",
+    "boxing":           "MATCH_WINNER",
+    "ice_hockey":       "HOCKEY_HANDICAP_3WAY",
+}
+
+
 @app.route("/api/matches")
 def api_matches():
     """Matches grouped by competition. ?sync=1 re-discovers from Kambi."""
@@ -230,13 +246,22 @@ def api_matches():
         for m in scrapers.discover_matches(_enabled_competitions()):
             db.upsert_match(m)
     matches    = db.list_matches(only_upcoming=True, sport_league_pairs=_enabled_sport_league_pairs())
-    hl_1x2     = db.headline_odds(scrapers.REFERENCE_OPERATOR, "MATCH_RESULT_FT")
+    # Pull headline odds for every distinct primary market in one pass per
+    # market — covers all enabled sports without N+1 queries.
+    primary_by_sport = {(m.get("sport") or "football"): _PRIMARY_MARKET_BY_SPORT.get(m.get("sport") or "football")
+                        for m in matches}
+    hl_by_market = {}
+    for mk in {v for v in primary_by_sport.values() if v}:
+        hl_by_market[mk] = db.headline_odds(scrapers.REFERENCE_OPERATOR, mk)
     hl_ou25    = db.headline_odds(scrapers.REFERENCE_OPERATOR, "OVER_UNDER_FT@2.5")
     mkt_counts = db.market_counts(scrapers.REFERENCE_OPERATOR)
     grouped = defaultdict(list)
     for m in matches:
+        sport = (m.get("sport") or "football").lower()
+        primary_market = _PRIMARY_MARKET_BY_SPORT.get(sport)
         m["last_refresh"]    = db.last_refresh(m["id"])
-        m["headline_odds"]   = hl_1x2.get(m["id"]) or None
+        m["headline_odds"]   = (hl_by_market.get(primary_market, {}).get(m["id"]) or None) if primary_market else None
+        m["headline_market"] = primary_market
         m["over_under_2_5"]  = hl_ou25.get(m["id"]) or None
         m["market_count"]    = mkt_counts.get(m["id"], 0)
         m["logo_url"]        = scrapers.league_logo_url(m.get("league_term"))
