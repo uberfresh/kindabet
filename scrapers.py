@@ -1099,6 +1099,10 @@ TOTO_GROUP_TO_CANONICAL = {
     "TOTAL_GOALS_OVER/UNDER_2ND_HALF_HOME":  ("OVER_UNDER_HOME_2H",   True),
     "TOTAL_GOALS_OVER/UNDER_1ST_HALF_AWAY":  ("OVER_UNDER_AWAY_1H",   True),
     "TOTAL_GOALS_OVER/UNDER_2ND_HALF_AWAY":  ("OVER_UNDER_AWAY_2H",   True),
+    # MMA — TOTO ships the bout-winner under FIGHT_WINNER. Selections come
+    # back as subType=H (competitor1) and subType=A (competitor2) plus the
+    # actual fighter name; we map them to 1/2 to align with Kambi's MMA rows.
+    "FIGHT_WINNER":                          ("MMA_BOUT_RESULT",      False),
 }
 
 # Selection-key remaps per canonical type.
@@ -1107,9 +1111,11 @@ _TOTO_SEL_OU      = {"H": "OVER", "L": "UNDER", "O": "OVER", "U": "UNDER"}
 _TOTO_SEL_BTTS    = {"Ja": "YES", "Nee": "NO", "Yes": "YES", "No": "NO"}
 _TOTO_SEL_DC      = {"1": "1X", "3": "12", "2": "X2"}               # by subType (HD/HA/DA encoded as 1/3/2)
 _TOTO_SEL_DNB     = {"H": "1", "A": "2"}
+_TOTO_SEL_HH      = {"H": "1", "A": "2"}                            # head-to-head (MMA, tennis-like)
 
 _TOTO_3WAY_ROOTS  = {"MATCH_RESULT_FT", "MATCH_RESULT_HT", "MATCH_RESULT_2H",
                      "HANDICAP_3WAY_FT", "HANDICAP_3WAY_1H", "HANDICAP_3WAY_2H"}
+_TOTO_HH_ROOTS    = {"MMA_BOUT_RESULT"}
 _TOTO_OU_ROOTS    = {"OVER_UNDER_FT", "OVER_UNDER_1H", "OVER_UNDER_2H",
                      "OVER_UNDER_HOME_FT", "OVER_UNDER_AWAY_FT",
                      "OVER_UNDER_HOME_1H", "OVER_UNDER_HOME_2H",
@@ -1151,6 +1157,7 @@ def _toto_canonical_market(market):
         elif root in _TOTO_BTTS_ROOTS:  sel_remap = _TOTO_SEL_BTTS
         elif root in _TOTO_DC_ROOTS:    sel_remap = _TOTO_SEL_DC
         elif root in _TOTO_DNB_ROOTS:   sel_remap = _TOTO_SEL_DNB
+        elif root in _TOTO_HH_ROOTS:    sel_remap = _TOTO_SEL_HH
         else:                           sel_remap = None  # Asian handicap etc — keep team names
         return mk, name, sel_remap, line_f
     # Fallback — TOTO-native key
@@ -1268,11 +1275,11 @@ def fetch_toto(home, away, kickoff_utc_iso=None, toto_event_id=None, **_):
 # ---------- TonyBet.nl (platform.tonybet.nl) ----------
 #
 # TonyBet runs on a Sportradar-derived backend with a public-ish JSON API.
-# The catalog is paginated by `sportCategoryId` (Sportradar category ID).
-# Three categories cover all 5 of our leagues:
-#   - 101: UEFA (Champions League + Europa League)
-#   - 41:  England (Premier League)
-#   - 111: Turkey (Süper Lig + 1. Lig)
+# The catalog is filtered by `sportCategoryId` (per-league) for football and
+# `sportId` (per-sport) for MMA, since UFC is one big category that's easier
+# to grab in a single sweep. Per-sport fetch specs:
+#   football: sportCategoryId in (101 UEFA, 41 England, 111 Turkey)
+#   ufc_mma:  sportId=1122 (covers all UFC categories)
 #
 # Markets are identified by integer `id` (TonyBet-internal). We map only the
 # canonical types we want to compare cross-operator. Lines (when present) live
@@ -1280,60 +1287,68 @@ def fetch_toto(home, away, kickoff_utc_iso=None, toto_event_id=None, **_):
 # typically exposes only the main line per market type (not all variants),
 # unlike Kambi which lists every line as a separate offer.
 
-TONYBET_CATEGORIES = (101, 41, 111)
-
-# market.id → (canonical_root, line_mode, outcome_id → selection_key)
-#
-# `line_mode` values:
-#   False     — no line; emit market_key = root.
-#
-# Notably absent:
-#   - 868 (Total Goals OU, "main"): single line per event with specifiers=null.
-#     Often the integer 2.0 (over≈1.36) — incompatible with Kambi's half-integer
-#     lines (1.5, 2.5, …). Replaced by 289 below, which carries every line
-#     explicitly in `specifiers`.
-#   - 557 (Asian Handicap): removed system-wide.
-TONYBET_MARKETS = {
-    621: ("MATCH_RESULT_FT",   False, {1: "1", 2: "X", 3: "2"}),
-    589: ("BTTS_FT",           False, {74: "YES", 76: "NO"}),
-    721: ("DOUBLE_CHANCE_FT",  False, {436: "1X", 438: "12", 440: "X2"}),
-    # Multi-line Total Goals OU. `specifiers="total=2.5"` parses to line=2.5,
-    # so the canonical key becomes OVER_UNDER_FT@2.5. The same id=289 also
-    # ships @0.5/1/1.5/2/2.5/3/3.5/4/4.5/5/5.5; the global OVER_UNDER_FT@2.5
-    # filter in app.py keeps only 2.5 visible in the UI.
-    289: ("OVER_UNDER_FT",     True,  {12: "OVER", 13: "UNDER"}),
-    # (id=189 was tentatively mapped to BTTS_1H based on a 3-event price
-    # cross-reference — but on Everton-City TonyBet returns only out_74=13
-    # while Kambi's BTTS_1H is 4.0/1.17, a 3x prob mismatch. The earlier
-    # match was coincidence; id=189 is some other market we can't ID
-    # without TonyBet shipping outcome names. Removed.)
-    # Half-Time / Full-Time (3x3 matrix). Outcome IDs follow Sportradar UOF
-    # convention for market 67: rows = 1H result, cols = FT result.
-    # Confirmed against Kambi crit 1001159830 across 3 events (Arsenal-Atletico,
-    # Bayern-PSG, Liverpool-Chelsea) — 1/1 always cheapest, 1/2 always most expensive.
-    467: ("HTFT_FT",           False, {
-        418: "1/1", 420: "1/X", 422: "1/2",
-        424: "X/1", 426: "X/X", 428: "X/2",
-        430: "2/1", 432: "2/X", 434: "2/2",
-    }),
+# (sport_term → list of (filter_param, value) tuples). Each tuple becomes one
+# request; results are unioned. Football needs three category requests; MMA
+# uses a single sportId-scoped request.
+TONYBET_FETCH_SPECS = {
+    "football": [("sportCategoryId_eq", 101),
+                 ("sportCategoryId_eq", 41),
+                 ("sportCategoryId_eq", 111)],
+    "ufc_mma":  [("sportId_eq", 1122)],
 }
 
-# Cached per-category fetch — bulk-refresh hits the same API many times,
-# this collapses redundant calls within a 60s window.
-_tonybet_cache = {}                       # cat_id → (timestamp, data dict)
+# market.id → (canonical_root, line_mode, outcome_id → selection_key), keyed
+# by sport. `line_mode` is True if the market_key gets the line appended.
+#
+# Football "Notably absent":
+#   - 868 (Total Goals OU, "main"): single line per event with specifiers=null.
+#     Replaced by 289 which ships every line explicitly in `specifiers`.
+#   - 557 (Asian Handicap): removed system-wide.
+#   - 189: spurious BTTS-1H mapping reverted in 4931dae after Everton-City
+#     showed only one outcome with implied probability 7.7% vs Kambi's 25%.
+TONYBET_MARKETS = {
+    "football": {
+        621: ("MATCH_RESULT_FT",   False, {1: "1", 2: "X", 3: "2"}),
+        589: ("BTTS_FT",           False, {74: "YES", 76: "NO"}),
+        721: ("DOUBLE_CHANCE_FT",  False, {436: "1X", 438: "12", 440: "X2"}),
+        # Multi-line Total Goals OU. `specifiers="total=2.5"` parses to line=2.5;
+        # the global OVER_UNDER_FT@2.5 filter in app.py keeps only 2.5 visible.
+        289: ("OVER_UNDER_FT",     True,  {12: "OVER", 13: "UNDER"}),
+        # Half-Time / Full-Time (3x3 matrix). Confirmed against Kambi
+        # crit 1001159830 across 3 events.
+        467: ("HTFT_FT",           False, {
+            418: "1/1", 420: "1/X", 422: "1/2",
+            424: "X/1", 426: "X/X", 428: "X/2",
+            430: "2/1", 432: "2/X", 434: "2/2",
+        }),
+    },
+    "ufc_mma": {
+        # Bout winner. Outcomes 4/5 follow the Sportradar UOF convention for
+        # head-to-head markets (4=competitor1, 5=competitor2). Mapped to 1/2
+        # so they line up with Kambi's MMA rows.
+        910: ("MMA_BOUT_RESULT",   False, {4: "1", 5: "2"}),
+    },
+}
+
+# Cached per-(sport, query) fetch — bulk-refresh hits the same API many
+# times; collapses redundant calls within a 60s window.
+_tonybet_cache = {}                       # (sport, param, value) → (timestamp, data)
 _tonybet_cache_lock = threading.Lock()
 _TONYBET_CACHE_TTL = 60.0
 
-def _tonybet_fetch_category(cat_id):
+def _tonybet_fetch_spec(sport, param, value):
+    """Fetch one TonyBet event-list slice scoped by either sportCategoryId or
+    sportId. Cached in-process for 60s."""
+    cache_key = (sport, param, value)
     now = time.time()
     with _tonybet_cache_lock:
-        cached = _tonybet_cache.get(cat_id)
+        cached = _tonybet_cache.get(cache_key)
         if cached and (now - cached[0]) < _TONYBET_CACHE_TTL:
             return cached[1]
     qs = (
         "lang=nl&relations=odds&relations=competitors&relations=league"
         "&oddsExists_eq=1&main=1&period=0&limit=150&status_in=0&isLive=false"
-        f"&sportCategoryId_eq={cat_id}"
+        f"&{param}={value}"
     )
     try:
         d = _http_get_json(
@@ -1342,7 +1357,7 @@ def _tonybet_fetch_category(cat_id):
     except Exception:
         return None
     with _tonybet_cache_lock:
-        _tonybet_cache[cat_id] = (now, data)
+        _tonybet_cache[cache_key] = (now, data)
     return data
 
 def _tonybet_parse_line(spec):
@@ -1357,9 +1372,21 @@ def _tonybet_parse_line(spec):
     except ValueError:
         return None
 
-def fetch_tonybet(home, away, kickoff_utc_iso=None, **_):
+def fetch_tonybet(home, away, kickoff_utc_iso=None, sport="football", **_):
     """Find the TonyBet event that matches our (home, away, kickoff) and pull
-    every canonical-mappable market off it."""
+    every canonical-mappable market off it. Sport-aware: football uses three
+    category-scoped fetches, ufc_mma uses one sportId-scoped fetch."""
+    sport = (sport or "football").lower()
+    fetch_specs = TONYBET_FETCH_SPECS.get(sport)
+    if not fetch_specs:
+        # No support for this sport yet (basketball, hockey, …). Emit one
+        # placeholder row so the operator surface area stays honest.
+        return [{"market_key": "MATCH_RESULT_FT", "market_label": "Maç Sonucu",
+                 "selection_key": "1", "selection_label": "1",
+                 "line": None, "odd": None, "ok": False,
+                 "note": f"tonybet: sport '{sport}' not wired"}]
+    market_map = TONYBET_MARKETS.get(sport, {})
+
     target_dt = None
     if kickoff_utc_iso:
         try:
@@ -1371,8 +1398,12 @@ def fetch_tonybet(home, away, kickoff_utc_iso=None, **_):
     found_odds = []
     found_c1 = found_c2 = ""
 
-    for cat in TONYBET_CATEGORIES:
-        data = _tonybet_fetch_category(cat)
+    # MMA fight names sometimes shift by ±10 minutes from Kambi's listed
+    # kickoff (especially card co-mains). Loosen the time gate to ±2h for MMA.
+    time_window = 7200 if sport == "ufc_mma" else 1800
+
+    for param, value in fetch_specs:
+        data = _tonybet_fetch_spec(sport, param, value)
         if not data:
             continue
         comp_by_id = {c["id"]: c for c in data.get("relations", {}).get("competitors", [])}
@@ -1386,7 +1417,7 @@ def fetch_tonybet(home, away, kickoff_utc_iso=None, **_):
                 ev_time = ev.get("time")
                 try:
                     ev_dt = datetime.fromisoformat(ev_time).replace(tzinfo=timezone.utc)
-                    if abs((ev_dt - target_dt).total_seconds()) > 1800:
+                    if abs((ev_dt - target_dt).total_seconds()) > time_window:
                         continue
                 except Exception:
                     continue
@@ -1406,7 +1437,7 @@ def fetch_tonybet(home, away, kickoff_utc_iso=None, **_):
 
     rows = []
     for m in found_odds:
-        mapping = TONYBET_MARKETS.get(m.get("id"))
+        mapping = market_map.get(m.get("id"))
         if not mapping:
             continue
         canonical_root, line_mode, sel_remap = mapping
@@ -1535,21 +1566,28 @@ def discover_matches(competitions=None):
     out.sort(key=lambda m: (m["competition"], m["kickoff_utc_iso"] or ""))
     return out
 
+# Per-operator sport support. Kambi covers every sport via the same
+# betoffer/event API; TOTO and TonyBet have parsers wired explicitly per
+# sport. Operators not listed for a given sport are skipped during refresh.
+OPERATOR_SUPPORTED_SPORTS = {
+    "TOTO.nl":    {"football", "ufc_mma"},
+    "TonyBet.nl": {"football", "ufc_mma"},
+}
+
 def fetch_all_for_match(match):
     """Run every operator's fetcher for one match. Returns list of odds rows
-    annotated with operator + license. For non-football matches we only run
-    Kambi brands (711 + Unibet) — TOTO/TonyBet scrapers are football-shaped
-    and would burn cycles producing nothing useful."""
+    annotated with operator + license. Operators are skipped silently if
+    they don't have a parser for the match's sport (Kambi brands always run)."""
     sport = (match.get("sport") or "football").lower()
-    is_football = sport == "football"
 
     rows = []
     for name, lic, fn, _ref in OPERATORS:
-        # Stage 1 of multi-sport: skip non-Kambi operators for non-football
-        # matches. (TOTO + TonyBet football-only until Stage 3 wires per-sport
-        # parsers.) Kambi covers every sport via the same betoffer/event API.
-        if not is_football and name not in KAMBI_BRANDS:
-            continue
+        # Kambi brands always run — their parser is sport-agnostic. Other
+        # operators run only for sports their parser explicitly handles.
+        if name not in KAMBI_BRANDS:
+            supported = OPERATOR_SUPPORTED_SPORTS.get(name, set())
+            if sport not in supported:
+                continue
         try:
             opr = fn(operator=name,
                      kambi_event_id=match.get("kambi_event_id"),
