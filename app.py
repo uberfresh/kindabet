@@ -390,11 +390,22 @@ def _selection_sort_key(market_key, selection_key):
 _BLOCKED_MARKET_FRAGMENTS = ("ASIAN_HANDICAP", "ASIAN_TOTAL",
                              "ASIAN_OVER_UNDER", "CORRECT_SCORE")
 
+# Football Alt/Üst: surface only the canonical 2.5 line. All other lines
+# (1.5/3.5/…) and all half/team-specific OU variants are filtered out so the
+# UI shows a single, comparable goal-totals market. Non-football totals
+# (BASKETBALL_TOTAL, HOCKEY_TOTAL, MMA_TOTAL_ROUNDS, …) are unaffected —
+# they're labelled "Toplam …" in TR, not "Alt / Üst".
+_OU_ALLOWED_KEY = "OVER_UNDER_FT@2.5"
+
 def _market_is_blocked(market_key):
     if not market_key:
         return False
     up = market_key.upper()
-    return any(frag in up for frag in _BLOCKED_MARKET_FRAGMENTS)
+    if any(frag in up for frag in _BLOCKED_MARKET_FRAGMENTS):
+        return True
+    if up.startswith("OVER_UNDER_") and up != _OU_ALLOWED_KEY:
+        return True
+    return False
 
 
 def _localize_market_label(market_key, stored_label):
