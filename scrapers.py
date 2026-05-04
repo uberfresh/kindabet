@@ -27,7 +27,9 @@ Conventions
 """
 import json
 import re
+import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import unicodedata
@@ -115,18 +117,45 @@ def _team_match(a, b):
                 return True
     return False
 
+# Reason the most recent _chrome_dump call failed, so the caller can surface
+# it in the persisted note (otherwise we'd just see "chrome dump failed" in
+# the DB with no diagnostic). Module-level is fine: chrome calls are
+# serialised through the refresh thread pool per worker.
+_last_chrome_error = None
+
 def _chrome_dump(url, timeout_sec=35, virtual_time_ms=20000):
-    """Run headless Chrome and return rendered DOM bytes. Empty bytes on failure."""
+    """Run headless Chrome and return rendered DOM bytes. Empty bytes on failure;
+    the failure reason is stashed in `_last_chrome_error` for the caller."""
+    global _last_chrome_error
+    _last_chrome_error = None
+    # Each chrome run gets its own profile dir so that two refreshes happening
+    # in parallel (worker pool, max_workers=2) don't fight over the default
+    # ~/.config/google-chrome lock and silently fail the loser.
+    profile_dir = tempfile.mkdtemp(prefix="kb-chrome-")
     try:
         return subprocess.check_output([
             "google-chrome", "--headless", "--disable-gpu", "--no-sandbox",
+            f"--user-data-dir={profile_dir}",
             f"--user-agent={UA}",
             "--lang=nl-NL", "--window-size=1280,3500",
             f"--virtual-time-budget={virtual_time_ms}",
             "--dump-dom", url,
-        ], timeout=timeout_sec, stderr=subprocess.DEVNULL)
-    except Exception:
+        ], timeout=timeout_sec, stderr=subprocess.PIPE)
+    except subprocess.TimeoutExpired:
+        _last_chrome_error = f"timeout after {timeout_sec}s"
         return b""
+    except subprocess.CalledProcessError as e:
+        tail = (e.stderr or b"").decode("utf-8", "replace").strip().splitlines()
+        _last_chrome_error = f"exit {e.returncode}: {tail[-1] if tail else '?'}"[:200]
+        return b""
+    except FileNotFoundError:
+        _last_chrome_error = "google-chrome binary not found on PATH"
+        return b""
+    except Exception as e:
+        _last_chrome_error = f"{type(e).__name__}: {e}"[:200]
+        return b""
+    finally:
+        shutil.rmtree(profile_dir, ignore_errors=True)
 
 # ---------- Kambi (711.nl + Unibet.nl) ----------
 
@@ -1120,7 +1149,8 @@ def _toto_dump_markets(event_id):
     url = f"https://sport.toto.nl/wedden/wedstrijd/{event_id}"
     dom = _chrome_dump(url, timeout_sec=60, virtual_time_ms=30000).decode("utf-8", "replace")
     if not dom:
-        return [], f"chrome dump failed for ev {event_id}"
+        reason = _last_chrome_error or "unknown"
+        return [], f"chrome dump failed for ev {event_id} ({reason})"
     markets = _toto_extract_markets_from_dom(event_id, dom)
     if not markets:
         return [], f"0 markets in DOM for ev {event_id}"
