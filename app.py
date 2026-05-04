@@ -160,8 +160,12 @@ def _refresh_sweep_worker(sport=None, discover=True, scope_label=None):
             with _refresh_all_lock:
                 _refresh_all_job["error"] = res["error"]
 
+    # only_pre_kickoff: skip matches that have already kicked off. Their
+    # markets are suspended at every operator, TOTO removes the event from
+    # /search post-kickoff, and the chrome dump fails or returns a stale
+    # page. Just leave the last pre-kickoff snapshot in place.
     matches = db.list_matches(
-        only_upcoming=True,
+        only_pre_kickoff=True,
         sport_league_pairs=_enabled_sport_league_pairs(),
         sport=sport,
     )
@@ -604,6 +608,28 @@ def api_refresh(match_id):
     m = db.get_match(match_id)
     if not m:
         return jsonify({"error": "not found"}), 404
+    # Skip live / past-kickoff matches: every operator has the markets
+    # suspended once the whistle blows, and TOTO removes the event page
+    # entirely. Hand back the existing snapshot rather than spinning up
+    # a chrome process to retrieve nothing.
+    try:
+        ko = datetime.fromisoformat((m.get("kickoff_utc") or "").replace("Z", "+00:00"))
+        if ko <= datetime.now(timezone.utc):
+            rows = db.latest_odds(match_id)
+            all_ops = [name for name, _l, _f, _r in scrapers.OPERATORS]
+            markets = _build_market_view(rows, scrapers.REFERENCE_OPERATOR, all_ops)
+            return jsonify({
+                "ok":              True,
+                "skipped":         "kickoff_passed",
+                "rows":            len(rows),
+                "by_operator":     {op: {"with_odds": 0, "total": 0} for op in all_ops},
+                "markets":         markets,
+                "operator_status": db.operator_status(match_id),
+                "last_refresh":    db.last_refresh(match_id),
+            })
+    except (ValueError, TypeError):
+        pass  # malformed kickoff — fall through and refresh anyway
+
     match_dict = {
         "sport":           m.get("sport") or "football",
         "competition":     m["competition"],

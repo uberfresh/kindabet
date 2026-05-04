@@ -154,16 +154,26 @@ def set_setting(key, value):
         c.commit()
 
 
-def list_matches(only_upcoming=True, league_terms=None, sport=None, sport_league_pairs=None):
+def list_matches(only_upcoming=True, league_terms=None, sport=None,
+                 sport_league_pairs=None, only_pre_kickoff=False):
     """Filter by enabled (sport, league_term) pairs OR by a flat league_terms
     list (legacy single-sport call) so disabled leagues drop out of the live
     view. Same league_term may appear under multiple sports (e.g. 'Champions
     League' exists for both football and handball) — only the composite filter
-    disambiguates. Optional `sport` further restricts to one sport_term."""
+    disambiguates. Optional `sport` further restricts to one sport_term.
+
+    `only_upcoming` keeps a 3h post-kickoff grace window so just-started /
+    just-finished matches stay visible in the UI listing.
+    `only_pre_kickoff` is the stricter form used by the refresh sweep: drop
+    everything at or past kickoff so we don't waste cycles re-fetching
+    suspended in-play markets (and TOTO removes events from /search after
+    kickoff anyway). Takes precedence over only_upcoming when set."""
     with _lock, conn() as c:
         where = []
         params = []
-        if only_upcoming:
+        if only_pre_kickoff:
+            where.append("datetime(kickoff_utc) > datetime('now')")
+        elif only_upcoming:
             where.append("datetime(kickoff_utc) >= datetime('now', '-3 hours')")
         if sport_league_pairs:
             # Composite filter: build (sport, league_term) IN clause as OR'd
