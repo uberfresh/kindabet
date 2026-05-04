@@ -556,21 +556,35 @@ def _build_market_view(rows, reference_operator, all_operators=None):
     return out_markets
 
 
+def _operators_for_sport(sport):
+    """Operators that actually run for a given sport. TOTO + TonyBet are
+    football-only (their parsers don't understand other sports), so for
+    UFC/basketball/etc. we surface only the Kambi brands. Returns the
+    operator-name list in registry order."""
+    is_football = (sport or "football").lower() == "football"
+    return [name for name, _l, _f, _r in scrapers.OPERATORS
+            if is_football or name in scrapers.KAMBI_BRANDS]
+
 @app.route("/api/match/<int:match_id>")
 def api_match(match_id):
     m = db.get_match(match_id)
     if not m:
         return jsonify({"error": "not found"}), 404
     rows = db.latest_odds(match_id)
-    all_ops = [name for name, _l, _f, _r in scrapers.OPERATORS]
+    sport = (m.get("sport") or "football").lower()
+    all_ops = _operators_for_sport(sport)
+    # Drop snapshot rows from operators we no longer surface for this sport
+    # (e.g. legacy TOTO/TonyBet rows on a match later re-classified non-football).
+    rows = [r for r in rows if r.get("operator") in all_ops]
     markets = _build_market_view(rows, scrapers.REFERENCE_OPERATOR, all_ops)
     m["logo_url"] = scrapers.league_logo_url(m.get("league_term"))
     return jsonify({
         "match":              m,
         "reference_operator": scrapers.REFERENCE_OPERATOR,
-        "operators":          [name for name, _l, _f, _r in scrapers.OPERATORS],
+        "operators":          all_ops,
         "markets":            markets,
-        "operator_status":    db.operator_status(match_id),
+        "operator_status":    [s for s in db.operator_status(match_id)
+                               if s.get("operator") in all_ops],
         "last_refresh":       db.last_refresh(match_id),
     })
 

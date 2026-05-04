@@ -1302,10 +1302,11 @@ TONYBET_MARKETS = {
     # ships @0.5/1/1.5/2/2.5/3/3.5/4/4.5/5/5.5; the global OVER_UNDER_FT@2.5
     # filter in app.py keeps only 2.5 visible in the UI.
     289: ("OVER_UNDER_FT",     True,  {12: "OVER", 13: "UNDER"}),
-    # BTTS — 1st Half. Same outcome IDs as full-match BTTS (Sportradar UOF
-    # universal yes/no = 74/76). Cross-checked against Kambi crit 1001642863
-    # ("Both Teams To Score - 1st Half"): TonyBet 4.3/1.2 vs Kambi 4.7/1.12.
-    189: ("BTTS_1H",           False, {74: "YES", 76: "NO"}),
+    # (id=189 was tentatively mapped to BTTS_1H based on a 3-event price
+    # cross-reference — but on Everton-City TonyBet returns only out_74=13
+    # while Kambi's BTTS_1H is 4.0/1.17, a 3x prob mismatch. The earlier
+    # match was coincidence; id=189 is some other market we can't ID
+    # without TonyBet shipping outcome names. Removed.)
     # Half-Time / Full-Time (3x3 matrix). Outcome IDs follow Sportradar UOF
     # convention for market 67: rows = 1H result, cols = FT result.
     # Confirmed against Kambi crit 1001159830 across 3 events (Arsenal-Atletico,
