@@ -1310,7 +1310,15 @@ TONYBET_MARKETS = {
     "football": {
         621: ("MATCH_RESULT_FT",   False, {1: "1", 2: "X", 3: "2"}),
         589: ("BTTS_FT",           False, {74: "YES", 76: "NO"}),
-        721: ("DOUBLE_CHANCE_FT",  False, {436: "1X", 438: "12", 440: "X2"}),
+        # (id=721 was tentatively mapped to DOUBLE_CHANCE_FT with outcomes
+        # {436:"1X", 438:"12", 440:"X2"}. User-reported on Everton-City:
+        # TonyBet "X2" = 3.85 (26% prob) vs TOTO X2 = 1.14 (88% prob).
+        # Implied probabilities of out_436/438/440 across Chelsea-Forest,
+        # Bayern-PSG, and Everton-City are consistently ~33%/47%/26% —
+        # invariant to which team is favored, which can only be "Half with
+        # Most Goals" (Sportradar market 27: 2H usually wins because most
+        # goals come late). Removed; TonyBet doesn't expose DC in the
+        # event-list payload — id=621 is the only other 3-outcome market.)
         # Multi-line Total Goals OU. `specifiers="total=2.5"` parses to line=2.5;
         # the global OVER_UNDER_FT@2.5 filter in app.py keeps only 2.5 visible.
         289: ("OVER_UNDER_FT",     True,  {12: "OVER", 13: "UNDER"}),
