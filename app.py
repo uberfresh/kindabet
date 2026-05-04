@@ -291,7 +291,9 @@ _MARKET_ORDER = [
     "MATCH_RESULT_FT",
     "DOUBLE_CHANCE_FT",
     "BTTS_FT",
+    "BTTS_1H",
     "OVER_UNDER_FT",
+    "HTFT_FT",
     "HANDICAP_FT",
     "HANDICAP_3WAY_FT",
     # Basketball
@@ -352,6 +354,8 @@ _SELECTION_ORDER = {
     "MATCH_RESULT_2H":         ["1", "X", "2"],
     "DOUBLE_CHANCE_FT":        ["1X", "12", "X2"],
     "BTTS_FT":                 ["YES", "NO"],
+    "BTTS_1H":                 ["YES", "NO"],
+    "HTFT_FT":                 ["1/1", "X/1", "X/X", "2/2", "1/X", "X/2", "2/X", "2/1", "1/2"],
     "OVER_UNDER_FT":           ["OVER", "UNDER"],
     "OVER_UNDER_1H":           ["OVER", "UNDER"],
     "OVER_UNDER_2H":           ["OVER", "UNDER"],

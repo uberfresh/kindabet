@@ -658,6 +658,7 @@ KAMBI_CANONICAL_CRIT = {
     1003194956: "OVER_UNDER_AWAY_1H",
     1003194957: "OVER_UNDER_AWAY_2H",
     1001159750: "FIRST_GOAL_FT",
+    1001159830: "HTFT_FT",             # Half Time / Full Time (3x3 = 9 outcomes)
     1005692199: "TO_QUALIFY",
     # ===== Basketball =====
     # All basketball markets are "Including Overtime" by default in Kambi —
@@ -762,6 +763,7 @@ MARKET_LABELS_TR = {
     "HANDICAP_3WAY_FT":    "Üçlü Handikap",
     "HANDICAP_3WAY_1H":    "Üçlü Handikap (İlk Yarı)",
     "FIRST_GOAL_FT":       "İlk Gol",
+    "HTFT_FT":             "İlk Yarı / Maç Sonucu",
     "TO_QUALIFY":          "Tur Atlama",
     # No-draw match winner — tennis, volleyball, some MMA placements
     "MATCH_WINNER":              "Maç Kazananı",
@@ -1224,6 +1226,19 @@ TONYBET_MARKETS = {
     # ships @0.5/1/1.5/2/2.5/3/3.5/4/4.5/5/5.5; the global OVER_UNDER_FT@2.5
     # filter in app.py keeps only 2.5 visible in the UI.
     289: ("OVER_UNDER_FT",     True,  {12: "OVER", 13: "UNDER"}),
+    # BTTS — 1st Half. Same outcome IDs as full-match BTTS (Sportradar UOF
+    # universal yes/no = 74/76). Cross-checked against Kambi crit 1001642863
+    # ("Both Teams To Score - 1st Half"): TonyBet 4.3/1.2 vs Kambi 4.7/1.12.
+    189: ("BTTS_1H",           False, {74: "YES", 76: "NO"}),
+    # Half-Time / Full-Time (3x3 matrix). Outcome IDs follow Sportradar UOF
+    # convention for market 67: rows = 1H result, cols = FT result.
+    # Confirmed against Kambi crit 1001159830 across 3 events (Arsenal-Atletico,
+    # Bayern-PSG, Liverpool-Chelsea) — 1/1 always cheapest, 1/2 always most expensive.
+    467: ("HTFT_FT",           False, {
+        418: "1/1", 420: "1/X", 422: "1/2",
+        424: "X/1", 426: "X/X", 428: "X/2",
+        430: "2/1", 432: "2/X", 434: "2/2",
+    }),
 }
 
 # Cached per-category fetch — bulk-refresh hits the same API many times,
