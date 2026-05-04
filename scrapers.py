@@ -26,6 +26,7 @@ Conventions
   match result, "OVER" / "UNDER" for totals, "YES" / "NO" for BTTS, etc.
 """
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -128,32 +129,34 @@ def _chrome_dump(url, timeout_sec=35, virtual_time_ms=20000):
     the failure reason is stashed in `_last_chrome_error` for the caller."""
     global _last_chrome_error
     _last_chrome_error = None
-    # Each chrome run gets its own profile dir so that two refreshes happening
-    # in parallel (worker pool, max_workers=2) don't fight over the default
-    # ~/.config/google-chrome lock and silently fail the loser.
+    # Each chrome run gets its own profile dir so two parallel refreshes
+    # (worker pool, max_workers=2) don't fight over the default chrome
+    # profile lock. Also doubles as a writable HOME so chrome's crashpad
+    # / cache can write under systemd's ProtectSystem=strict.
     profile_dir = tempfile.mkdtemp(prefix="kb-chrome-")
     try:
+        # Chrome (and crashpad in particular) writes a few things to
+        # $HOME/.config and $HOME/.cache regardless of --user-data-dir.
+        # Under the kindabet systemd unit, $HOME=/opt/kindabet which is
+        # read-only (only /opt/kindabet/data is writable). Without an
+        # override, crashpad fails to write its socket dir and the main
+        # chrome process SIGTRAPs at startup. Pointing HOME at the
+        # tempdir routes every $HOME-relative write to a writable place.
+        env = {**os.environ, "HOME": profile_dir,
+               "XDG_CONFIG_HOME": profile_dir, "XDG_CACHE_HOME": profile_dir,
+               "XDG_DATA_HOME": profile_dir}
         return subprocess.check_output([
             "google-chrome", "--headless", "--disable-gpu", "--no-sandbox",
-            # systemd's PrivateTmp=true gives the service its own (small)
-            # /dev/shm. Two parallel chromes saturate it and SIGTRAP. This
-            # flag makes chrome use /tmp for IPC instead.
+            # systemd's PrivateTmp=true gives the service a small private
+            # /dev/shm; parallel chromes saturate it and SIGTRAP. Force
+            # IPC shared-memory onto /tmp instead.
             "--disable-dev-shm-usage",
-            # Chrome spawns chrome_crashpad_handler at startup; under
-            # PrivateTmp + --no-sandbox it gets mangled args, prints its
-            # --help to stderr, and exits non-zero — which makes the main
-            # chrome abort with signal -5. We don't consume crash reports,
-            # so disable the reporter outright (covers both crashpad and
-            # the older breakpad code paths).
-            "--disable-crash-reporter",
-            "--disable-breakpad",
-            "--disable-features=Crashpad",
             f"--user-data-dir={profile_dir}",
             f"--user-agent={UA}",
             "--lang=nl-NL", "--window-size=1280,3500",
             f"--virtual-time-budget={virtual_time_ms}",
             "--dump-dom", url,
-        ], timeout=timeout_sec, stderr=subprocess.PIPE)
+        ], timeout=timeout_sec, stderr=subprocess.PIPE, env=env)
     except subprocess.TimeoutExpired:
         _last_chrome_error = f"timeout after {timeout_sec}s"
         return b""
