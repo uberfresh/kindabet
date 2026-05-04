@@ -1112,29 +1112,54 @@ def _toto_canonical_market(market):
     line_suffix = f"@{line_f:g}" if line_f is not None else ""
     return f"TOTO_{gc}{line_suffix}", name, None, line_f
 
-def fetch_toto(home, away, kickoff_utc_iso=None, **_):
-    """Render TOTO's match page via headless Chrome and harvest every market."""
+def _toto_dump_markets(event_id):
+    """Render the TOTO match page and parse every embedded market JSON.
+    Returns the list of market dicts (possibly empty). DOM-empty / fetch-fail
+    distinction: returns ([], "<note>") so the caller can decide whether to
+    re-resolve the event id."""
+    url = f"https://sport.toto.nl/wedden/wedstrijd/{event_id}"
+    dom = _chrome_dump(url, timeout_sec=60, virtual_time_ms=30000).decode("utf-8", "replace")
+    if not dom:
+        return [], f"chrome dump failed for ev {event_id}"
+    markets = _toto_extract_markets_from_dom(event_id, dom)
+    if not markets:
+        return [], f"0 markets in DOM for ev {event_id}"
+    return markets, None
+
+def fetch_toto(home, away, kickoff_utc_iso=None, toto_event_id=None, **_):
+    """Render TOTO's match page via headless Chrome and harvest every market.
+    If `toto_event_id` is supplied (cached by db.set_toto_event_id), skip the
+    /search resolution entirely. On stale-cache fallback (cached id renders
+    empty), re-resolve via /search and retry once."""
     try:
-        ev = _toto_search_event(home, away, kickoff_utc_iso)
-        if not ev:
-            return [{"market_key": "MATCH_RESULT_FT", "market_label": "Maç Sonucu",
-                     "selection_key": "1", "selection_label": "1",
-                     "line": None, "odd": None, "ok": False,
-                     "note": "toto: no event match"}]
-        event_id = str(ev["id"])
-        url = f"https://sport.toto.nl/wedden/wedstrijd/{event_id}"
-        dom = _chrome_dump(url, timeout_sec=60, virtual_time_ms=30000).decode("utf-8", "replace")
-        if not dom:
-            return [{"market_key": "MATCH_RESULT_FT", "market_label": "Maç Sonucu",
-                     "selection_key": "1", "selection_label": "1",
-                     "line": None, "odd": None, "ok": False,
-                     "note": f"toto: chrome dump failed for ev {event_id}"}]
-        markets = _toto_extract_markets_from_dom(event_id, dom)
+        event_id = str(toto_event_id) if toto_event_id else None
+        markets = []
+        empty_note = None
+
+        if event_id:
+            markets, empty_note = _toto_dump_markets(event_id)
+            if not markets:
+                # Cached id no longer valid (event finished, reassigned, …).
+                # Drop it and fall through to a fresh /search lookup.
+                event_id = None
+
+        if not event_id:
+            ev = _toto_search_event(home, away, kickoff_utc_iso)
+            if not ev:
+                return [{"market_key": "MATCH_RESULT_FT", "market_label": "Maç Sonucu",
+                         "selection_key": "1", "selection_label": "1",
+                         "line": None, "odd": None, "ok": False,
+                         "note": "toto: no event match",
+                         "toto_event_id": None}]
+            event_id = str(ev["id"])
+            markets, empty_note = _toto_dump_markets(event_id)
+
         if not markets:
             return [{"market_key": "MATCH_RESULT_FT", "market_label": "Maç Sonucu",
                      "selection_key": "1", "selection_label": "1",
                      "line": None, "odd": None, "ok": False,
-                     "note": f"toto: 0 markets in DOM for ev {event_id}"}]
+                     "note": f"toto: {empty_note}",
+                     "toto_event_id": event_id}]
         # MATCH_RESULT_2 is the "early payout" version — different odds, would
         # double up on MATCH_RESULT_FT. Drop it and prefer plain MATCH_RESULT
         # for cross-operator comparison.
@@ -1182,12 +1207,17 @@ def fetch_toto(home, away, kickoff_utc_iso=None, **_):
                          "selection_key": "1", "selection_label": "1",
                          "line": None, "odd": None, "ok": False,
                          "note": f"toto: parsed 0 outcomes for ev {event_id}"})
+        # Carry the resolved id back to the caller on the first row so it can
+        # update the per-match cache. Other rows don't need it; the caller
+        # only reads it once.
+        rows[0]["toto_event_id"] = event_id
         return rows
     except Exception as e:
         return [{"market_key": "MATCH_RESULT_FT", "market_label": "Maç Sonucu",
                  "selection_key": "1", "selection_label": "1",
                  "line": None, "odd": None, "ok": False,
-                 "note": f"toto err: {e}"}]
+                 "note": f"toto err: {e}",
+                 "toto_event_id": None}]
 
 # ---------- TonyBet.nl (platform.tonybet.nl) ----------
 #
@@ -1476,6 +1506,7 @@ def fetch_all_for_match(match):
         try:
             opr = fn(operator=name,
                      kambi_event_id=match.get("kambi_event_id"),
+                     toto_event_id=match.get("toto_event_id"),
                      home=match.get("home"),
                      away=match.get("away"),
                      kickoff_utc_iso=match.get("kickoff_utc_iso"),

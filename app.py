@@ -38,6 +38,15 @@ AUTO_REFRESH_INTERVAL_SECONDS = 3600
 
 def _refresh_match_in_background(match_id, match_dict):
     rows = scrapers.fetch_all_for_match(match_dict)
+    # If TOTO resolved a fresh event id (cache miss or stale-cache fallback),
+    # persist it so the next refresh skips the rate-limited /search lookup.
+    for r in rows:
+        if r.get("operator") == "TOTO.nl" and r.get("toto_event_id"):
+            try:
+                db.set_toto_event_id(match_id, int(r["toto_event_id"]))
+            except (TypeError, ValueError):
+                pass
+            break
     db.insert_snapshots(match_id, rows)
     return rows
 
@@ -603,6 +612,7 @@ def api_refresh(match_id):
         "away":            m["away"],
         "kickoff_utc_iso": m["kickoff_utc"],
         "kambi_event_id":  m["kambi_event_id"],
+        "toto_event_id":   m.get("toto_event_id"),
     }
     fut = _pool.submit(_refresh_match_in_background, match_id, match_dict)
     rows = fut.result(timeout=180)

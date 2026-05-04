@@ -98,6 +98,12 @@ def init():
         match_cols = {r[1] for r in c.execute("PRAGMA table_info(matches)").fetchall()}
         if "sport" not in match_cols:
             c.execute("ALTER TABLE matches ADD COLUMN sport TEXT NOT NULL DEFAULT 'football'")
+        # TOTO event-id cache. Resolving it via /search costs ~0.5-2.5s per
+        # match (rate-limited at ~2/s); caching the resolved id collapses
+        # repeat refreshes to a single chrome-dump call. Nullable until first
+        # successful resolution.
+        if "toto_event_id" not in match_cols:
+            c.execute("ALTER TABLE matches ADD COLUMN toto_event_id INTEGER")
         # Indexes that depend on the migrated columns — safe to run last.
         c.executescript(SCHEMA_POST_MIGRATION)
         c.commit()
@@ -184,6 +190,17 @@ def get_match(match_id):
     with _lock, conn() as c:
         r = c.execute("SELECT * FROM matches WHERE id = ?", (match_id,)).fetchone()
         return dict(r) if r else None
+
+def set_toto_event_id(match_id, toto_event_id):
+    """Cache the resolved TOTO event id so subsequent refreshes can skip the
+    rate-limited /search lookup. No-op if the value is unchanged."""
+    if not toto_event_id:
+        return
+    with _lock, conn() as c:
+        c.execute("UPDATE matches SET toto_event_id = ? WHERE id = ? AND "
+                  "(toto_event_id IS NULL OR toto_event_id != ?)",
+                  (toto_event_id, match_id, toto_event_id))
+        c.commit()
 
 def insert_snapshots(match_id, rows):
     """Persist a refresh. For each (operator, market_key, selection_key):
