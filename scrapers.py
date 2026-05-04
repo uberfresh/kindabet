@@ -1310,15 +1310,13 @@ TONYBET_MARKETS = {
     "football": {
         621: ("MATCH_RESULT_FT",   False, {1: "1", 2: "X", 3: "2"}),
         589: ("BTTS_FT",           False, {74: "YES", 76: "NO"}),
-        # (id=721 was tentatively mapped to DOUBLE_CHANCE_FT with outcomes
-        # {436:"1X", 438:"12", 440:"X2"}. User-reported on Everton-City:
-        # TonyBet "X2" = 3.85 (26% prob) vs TOTO X2 = 1.14 (88% prob).
-        # Implied probabilities of out_436/438/440 across Chelsea-Forest,
-        # Bayern-PSG, and Everton-City are consistently ~33%/47%/26% —
-        # invariant to which team is favored, which can only be "Half with
-        # Most Goals" (Sportradar market 27: 2H usually wins because most
-        # goals come late). Removed; TonyBet doesn't expose DC in the
-        # event-list payload — id=621 is the only other 3-outcome market.)
+        # Double Chance (Sportradar market 10). Outcomes 9/10/11 are the
+        # canonical UOF 1X/12/X2 IDs — verified across 20 Premier League
+        # events: math-consistent with id=621's 1X2 prices on every match
+        # (e.g. Everton-City 545 X2=1.14 ≈ fair 1.15 from 1X2 4.9/1.50).
+        # NOTE: TonyBet doesn't classify DC as "main", so the fetch must
+        # use main=0 (see _tonybet_fetch_spec) to surface this market.
+        545: ("DOUBLE_CHANCE_FT",  False, {9: "1X", 10: "12", 11: "X2"}),
         # Multi-line Total Goals OU. `specifiers="total=2.5"` parses to line=2.5;
         # the global OVER_UNDER_FT@2.5 filter in app.py keeps only 2.5 visible.
         289: ("OVER_UNDER_FT",     True,  {12: "OVER", 13: "UNDER"}),
@@ -1353,9 +1351,13 @@ def _tonybet_fetch_spec(sport, param, value):
         cached = _tonybet_cache.get(cache_key)
         if cached and (now - cached[0]) < _TONYBET_CACHE_TTL:
             return cached[1]
+    # main=0 (instead of main=1) surfaces secondary markets like Double
+    # Chance (id=545) and a handful of others that TonyBet considers non-
+    # primary; payload grows ~6x but we discard 95% of it via the
+    # market_map dict lookup, so cost is negligible.
     qs = (
         "lang=nl&relations=odds&relations=competitors&relations=league"
-        "&oddsExists_eq=1&main=1&period=0&limit=150&status_in=0&isLive=false"
+        "&oddsExists_eq=1&main=0&period=0&limit=150&status_in=0&isLive=false"
         f"&{param}={value}"
     )
     try:
