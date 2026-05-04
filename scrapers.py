@@ -139,6 +139,15 @@ def _chrome_dump(url, timeout_sec=35, virtual_time_ms=20000):
             # /dev/shm. Two parallel chromes saturate it and SIGTRAP. This
             # flag makes chrome use /tmp for IPC instead.
             "--disable-dev-shm-usage",
+            # Chrome spawns chrome_crashpad_handler at startup; under
+            # PrivateTmp + --no-sandbox it gets mangled args, prints its
+            # --help to stderr, and exits non-zero — which makes the main
+            # chrome abort with signal -5. We don't consume crash reports,
+            # so disable the reporter outright (covers both crashpad and
+            # the older breakpad code paths).
+            "--disable-crash-reporter",
+            "--disable-breakpad",
+            "--disable-features=Crashpad",
             f"--user-data-dir={profile_dir}",
             f"--user-agent={UA}",
             "--lang=nl-NL", "--window-size=1280,3500",
