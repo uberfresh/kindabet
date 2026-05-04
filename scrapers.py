@@ -135,6 +135,10 @@ def _chrome_dump(url, timeout_sec=35, virtual_time_ms=20000):
     try:
         return subprocess.check_output([
             "google-chrome", "--headless", "--disable-gpu", "--no-sandbox",
+            # systemd's PrivateTmp=true gives the service its own (small)
+            # /dev/shm. Two parallel chromes saturate it and SIGTRAP. This
+            # flag makes chrome use /tmp for IPC instead.
+            "--disable-dev-shm-usage",
             f"--user-data-dir={profile_dir}",
             f"--user-agent={UA}",
             "--lang=nl-NL", "--window-size=1280,3500",
