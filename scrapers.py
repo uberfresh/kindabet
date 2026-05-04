@@ -1210,20 +1210,20 @@ TONYBET_CATEGORIES = (101, 41, 111)
 #   False     — no line; emit market_key = root.
 #
 # Notably absent:
-#   - 868 (Total Goals OU): TonyBet's /api/event/list ships a single "main"
-#     OU line per event with specifiers=null. That main line is often the
-#     integer 2.0 (over≈1.36, under≈3.00) while Kambi only carries
-#     half-integer lines (1.5, 2.5, 3.5). Inferring TonyBet's line by
-#     matching against Kambi's nearest Over price was rounding 2.0 → 2.5
-#     and surfacing a 3.00 odd in the OU 2.5 row, while TonyBet's actual
-#     OU 2.5 (visible only on their SPA via WebSocket) was 4.10. Better
-#     to omit than to mislead — cross-operator OU comparison still works
-#     across 711, Unibet, and TOTO.
+#   - 868 (Total Goals OU, "main"): single line per event with specifiers=null.
+#     Often the integer 2.0 (over≈1.36) — incompatible with Kambi's half-integer
+#     lines (1.5, 2.5, …). Replaced by 289 below, which carries every line
+#     explicitly in `specifiers`.
 #   - 557 (Asian Handicap): removed system-wide.
 TONYBET_MARKETS = {
     621: ("MATCH_RESULT_FT",   False, {1: "1", 2: "X", 3: "2"}),
     589: ("BTTS_FT",           False, {74: "YES", 76: "NO"}),
     721: ("DOUBLE_CHANCE_FT",  False, {436: "1X", 438: "12", 440: "X2"}),
+    # Multi-line Total Goals OU. `specifiers="total=2.5"` parses to line=2.5,
+    # so the canonical key becomes OVER_UNDER_FT@2.5. The same id=289 also
+    # ships @0.5/1/1.5/2/2.5/3/3.5/4/4.5/5/5.5; the global OVER_UNDER_FT@2.5
+    # filter in app.py keeps only 2.5 visible in the UI.
+    289: ("OVER_UNDER_FT",     True,  {12: "OVER", 13: "UNDER"}),
 }
 
 # Cached per-category fetch — bulk-refresh hits the same API many times,
